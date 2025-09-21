@@ -67,13 +67,14 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 		INSERT INTO groups (
 			id, name, description, app_id, owner_id, invite_code, max_members, 
 			current_members, price_per_member, admin_fee, total_price, status, created_at, updated_at
-		)o
+		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 	`, groupID, req.Name, req.Description, req.AppID, userID.(uuid.UUID), inviteCode, req.MaxMembers,
 		1, pricePerMember, adminFee, totalPrice, "open", time.Now(), time.Now())
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create group"})
+		fmt.Printf("Error creating group: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create group", "details": err.Error()})
 		return
 	}
 
@@ -84,7 +85,8 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 	`, uuid.New().String(), groupID, userID.(uuid.UUID), time.Now(), "active", 0)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add owner to group"})
+		fmt.Printf("Error adding owner to group: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add owner to group", "details": err.Error()})
 		return
 	}
 
