@@ -92,9 +92,32 @@ func AuthRequiredWithStatus(db *sql.DB) gin.HandlerFunc {
 
 func CORS() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		origin := config.GetEnv("CORS_ORIGIN", "http://localhost:3000")
+		requestOrigin := c.Request.Header.Get("Origin")
+		appConfig := config.GetConfig()
 
-		c.Header("Access-Control-Allow-Origin", origin)
+		// Check if the request origin is in our allowed origins
+		allowedOrigins := appConfig.Server.CORSOrigins
+		if len(allowedOrigins) == 0 {
+			allowedOrigins = []string{"http://localhost:3000"}
+		}
+
+		// Check if origin is allowed
+		originAllowed := false
+		for _, allowedOrigin := range allowedOrigins {
+			if requestOrigin == allowedOrigin {
+				originAllowed = true
+				break
+			}
+		}
+
+		// Set CORS headers
+		if originAllowed {
+			c.Header("Access-Control-Allow-Origin", requestOrigin)
+		} else if len(allowedOrigins) > 0 {
+			// If origin not allowed, use the first allowed origin as fallback
+			c.Header("Access-Control-Allow-Origin", allowedOrigins[0])
+		}
+
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization")
 		c.Header("Access-Control-Allow-Credentials", "true")

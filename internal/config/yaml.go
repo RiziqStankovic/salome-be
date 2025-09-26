@@ -33,9 +33,9 @@ type JWTConfig struct {
 }
 
 type ServerConfig struct {
-	Port       int    `yaml:"port"`
-	Host       string `yaml:"host"`
-	CORSOrigin string `yaml:"cors_origin"`
+	Port        int      `yaml:"port"`
+	Host        string   `yaml:"host"`
+	CORSOrigins []string `yaml:"cors_origins"`
 }
 
 type EmailConfig struct {
@@ -143,8 +143,8 @@ func setDefaults(config *Config) {
 	if config.Server.Host == "" {
 		config.Server.Host = "localhost"
 	}
-	if config.Server.CORSOrigin == "" {
-		config.Server.CORSOrigin = "http://localhost:3000"
+	if len(config.Server.CORSOrigins) == 0 {
+		config.Server.CORSOrigins = []string{"http://localhost:3000"}
 	}
 
 	// Email defaults
@@ -230,7 +230,10 @@ func GetEnv(key, defaultValue string) string {
 	case "PORT":
 		return fmt.Sprintf("%d", config.Server.Port)
 	case "CORS_ORIGIN":
-		return config.Server.CORSOrigin
+		if len(config.Server.CORSOrigins) > 0 {
+			return config.Server.CORSOrigins[0]
+		}
+		return "http://localhost:3000"
 	case "SMTP_HOST":
 		return config.Email.SMTPHost
 	case "SMTP_PORT":
