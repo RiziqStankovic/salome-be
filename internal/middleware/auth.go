@@ -90,6 +90,52 @@ func AuthRequiredWithStatus(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
+// AdminRequired checks if user is admin
+func AdminRequired(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// First check authentication
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})
+			c.Abort()
+			return
+		}
+
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		if tokenString == authHeader {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization header format"})
+			c.Abort()
+			return
+		}
+
+		claims, err := utils.ValidateJWT(tokenString)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			c.Abort()
+			return
+		}
+
+		// Check if user is admin
+		var isAdmin bool
+		err = db.QueryRow("SELECT is_admin FROM users WHERE id = $1", claims.UserID).Scan(&isAdmin)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check admin status"})
+			c.Abort()
+			return
+		}
+
+		if !isAdmin {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
+			c.Abort()
+			return
+		}
+
+		c.Set("user_id", claims.UserID)
+		c.Set("user_email", claims.Email)
+		c.Next()
+	}
+}
+
 func CORS() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestOrigin := c.Request.Header.Get("Origin")

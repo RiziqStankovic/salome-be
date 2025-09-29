@@ -195,6 +195,49 @@ func (h *AppHandler) GetPopularApps(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"apps": apps})
 }
 
+func (h *AppHandler) GetAppByID(c *gin.Context) {
+	appID := c.Param("id")
+	if appID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "App ID is required"})
+		return
+	}
+
+	var app models.App
+	err := h.db.QueryRow(`
+		SELECT id, name, description, category, icon_url, website_url, total_members, total_price, is_popular, is_active, is_available, max_group_members, base_price, admin_fee_percentage
+		FROM apps 
+		WHERE id = $1 AND is_active = true
+	`, appID).Scan(
+		&app.ID, &app.Name, &app.Description, &app.Category, &app.IconURL, &app.WebsiteURL,
+		&app.TotalMembers, &app.TotalPrice, &app.IsPopular, &app.IsActive, &app.IsAvailable,
+		&app.MaxGroupMembers, &app.BasePrice, &app.AdminFeePercentage,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "App not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch app"})
+		return
+	}
+
+	// Calculate pricing details
+	var pricePerUser float64
+	if app.TotalMembers > 0 {
+		pricePerUser = float64(app.TotalPrice)/float64(app.TotalMembers) + 3500
+	} else {
+		pricePerUser = float64(app.TotalPrice) + 3500
+	}
+
+	response := models.AppDetailResponse{
+		App:          app,
+		PricePerUser: pricePerUser,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
 func (h *AppHandler) SeedApps(c *gin.Context) {
 	// This is a development endpoint to seed apps data
 	apps := []models.App{

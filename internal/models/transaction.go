@@ -17,6 +17,7 @@ type Transaction struct {
 	Description      string     `json:"description" db:"description"`
 	PaymentMethod    *string    `json:"payment_method" db:"payment_method"`
 	PaymentReference *string    `json:"payment_reference" db:"payment_reference"`
+	PaymentLinkID    *string    `json:"payment_link_id" db:"payment_link_id"`
 	Status           string     `json:"status" db:"status"`
 	CreatedAt        time.Time  `json:"created_at" db:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at" db:"updated_at"`

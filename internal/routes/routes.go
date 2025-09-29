@@ -37,11 +37,16 @@ func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler 
 	{
 		groups.POST("", groupHandler.CreateGroup)
 		groups.POST("/join", groupHandler.JoinGroup)
+		groups.DELETE("/:id/leave", groupHandler.LeaveGroup)
 		groups.GET("", groupHandler.GetUserGroups)
 		groups.GET("/:id", groupHandler.GetGroupDetails)
 		groups.GET("/:id/members", groupHandler.GetGroupMembers)
 		groups.PUT("/:id/status", groupHandler.UpdateGroupStatus)
 		groups.GET("/public", groupHandler.GetPublicGroups) // Public groups for joining
+
+		// State machine endpoints - using different path structure
+		groups.GET("/:id/status", groupHandler.GetGroupStatus)
+		groups.GET("/:id/users/:user_id/status", groupHandler.GetUserStatus)
 	}
 
 	// Public group routes (no auth required for browsing)
@@ -64,6 +69,7 @@ func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler 
 	payments.Use(middleware.AuthRequiredWithStatus(db))
 	{
 		payments.POST("", paymentHandler.CreatePayment)
+		payments.POST("/group-payment-link", paymentHandler.CreateGroupPaymentLink)
 		payments.GET("", paymentHandler.GetUserPayments)
 	}
 
@@ -71,6 +77,7 @@ func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler 
 	apps := v1.Group("/apps")
 	{
 		apps.GET("", appHandler.GetApps)
+		apps.GET("/:id", appHandler.GetAppByID)
 		apps.GET("/categories", appHandler.GetAppCategories)
 		apps.GET("/popular", appHandler.GetPopularApps)
 		apps.POST("/seed", appHandler.SeedApps) // Development only
@@ -97,6 +104,15 @@ func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler 
 	webhooks := v1.Group("/webhooks")
 	{
 		webhooks.POST("/midtrans", paymentHandler.HandlePaymentNotification)
+	}
+
+	// Admin routes (require admin status)
+	admin := v1.Group("/admin")
+	admin.Use(middleware.AdminRequired(db))
+	{
+		// User state management
+		admin.PUT("/users/status", groupHandler.AdminUpdateUserStatus)
+		admin.PUT("/groups/status", groupHandler.AdminUpdateGroupStatus)
 	}
 
 	// Health check

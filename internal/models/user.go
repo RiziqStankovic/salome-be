@@ -15,6 +15,7 @@ type User struct {
 	Status       string    `json:"status" db:"status"`
 	Balance      float64   `json:"balance" db:"balance"`
 	TotalSpent   float64   `json:"total_spent" db:"total_spent"`
+	IsAdmin      bool      `json:"is_admin" db:"is_admin"`
 	CreatedAt    time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
 }
@@ -38,5 +39,6 @@ type UserResponse struct {
 	Status     string    `json:"status"`
 	Balance    float64   `json:"balance"`
 	TotalSpent float64   `json:"total_spent"`
+	IsAdmin    bool      `json:"is_admin"`
 	CreatedAt  time.Time `json:"created_at"`
 }

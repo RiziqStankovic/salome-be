@@ -16,6 +16,7 @@ type Config struct {
 	Redis    RedisConfig    `yaml:"redis"`
 	Security SecurityConfig `yaml:"security"`
 	Features FeatureConfig  `yaml:"features"`
+	Midtrans MidtransConfig `yaml:"midtrans"`
 }
 
 type DatabaseConfig struct {
@@ -63,6 +64,13 @@ type FeatureConfig struct {
 	EnableEmailVerification bool `yaml:"enable_email_verification"`
 	EnablePaymentGateway    bool `yaml:"enable_payment_gateway"`
 	EnableNotifications     bool `yaml:"enable_notifications"`
+}
+
+type MidtransConfig struct {
+	ServerKey    string `yaml:"server_key"`
+	ClientKey    string `yaml:"client_key"`
+	BaseURL      string `yaml:"base_url"`
+	IsProduction bool   `yaml:"is_production"`
 }
 
 var AppConfig *Config
