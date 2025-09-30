@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -71,11 +72,11 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 	_, err = h.db.Exec(`
 		INSERT INTO groups (
 			id, name, description, app_id, owner_id, invite_code, max_members, 
-			current_members, price_per_member, admin_fee, total_price, status, created_at, updated_at
+			current_members, price_per_member, admin_fee, total_price, status, is_public, created_at, updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 	`, groupID, req.Name, req.Description, req.AppID, userID.(uuid.UUID), inviteCode, req.MaxMembers,
-		1, pricePerMember, adminFee, totalPrice, "open", time.Now(), time.Now())
+		1, pricePerMember, adminFee, totalPrice, "open", req.IsPublic, time.Now(), time.Now())
 
 	if err != nil {
 		fmt.Printf("Error creating group: %v\n", err)
@@ -85,9 +86,9 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 
 	// Add owner as member
 	_, err = h.db.Exec(`
-		INSERT INTO group_members (id, group_id, user_id, joined_at, status, payment_amount)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, uuid.New().String(), groupID, userID.(uuid.UUID), time.Now(), "active", 0)
+		INSERT INTO group_members (id, group_id, user_id, role, joined_at, user_status, payment_amount)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, uuid.New().String(), groupID, userID.(uuid.UUID), "owner", time.Now(), "active", 0)
 
 	if err != nil {
 		fmt.Printf("Error adding owner to group: %v\n", err)
@@ -109,7 +110,8 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 		PricePerMember: pricePerMember,
 		AdminFee:       adminFee,
 		TotalPrice:     totalPrice,
-		Status:         "open",
+		GroupStatus:    "open",
+		IsPublic:       req.IsPublic,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -174,9 +176,9 @@ func (h *GroupHandler) JoinGroup(c *gin.Context) {
 
 	// Add user to group
 	_, err = h.db.Exec(`
-		INSERT INTO group_members (id, group_id, user_id, joined_at, status, payment_amount)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, uuid.New().String(), group.ID, userID.(uuid.UUID), time.Now(), "pending", 0)
+		INSERT INTO group_members (id, group_id, user_id, role, joined_at, user_status, payment_amount)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, uuid.New().String(), group.ID, userID.(uuid.UUID), "member", time.Now(), "pending", 0)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to join group"})
@@ -217,7 +219,7 @@ func (h *GroupHandler) GetUserGroups(c *gin.Context) {
 
 	rows, err := h.db.Query(`
 		SELECT g.id, g.name, g.description, g.app_id, g.owner_id, g.invite_code, g.max_members, 
-		       g.current_members, g.price_per_member, g.admin_fee, g.total_price, g.status,
+		       g.current_members, g.price_per_member, g.admin_fee, g.total_price, g.group_status,
 		       g.expires_at, g.created_at, g.updated_at,
 		       COUNT(gm.id) as member_count,
 		       a.name as app_name, a.description as app_description, a.category, a.icon_url
@@ -226,7 +228,7 @@ func (h *GroupHandler) GetUserGroups(c *gin.Context) {
 		LEFT JOIN apps a ON g.app_id = a.id
 		WHERE gm.user_id = $1
 		GROUP BY g.id, g.name, g.description, g.app_id, g.owner_id, g.invite_code, g.max_members,
-		         g.current_members, g.price_per_member, g.admin_fee, g.total_price, g.status,
+		         g.current_members, g.price_per_member, g.admin_fee, g.total_price, g.group_status,
 		         g.expires_at, g.created_at, g.updated_at,
 		         a.name, a.description, a.category, a.icon_url
 		ORDER BY g.created_at DESC
@@ -247,7 +249,7 @@ func (h *GroupHandler) GetUserGroups(c *gin.Context) {
 		err := rows.Scan(
 			&group.ID, &group.Name, &group.Description, &group.AppID, &group.OwnerID,
 			&group.InviteCode, &group.MaxMembers, &group.CurrentMembers, &group.PricePerMember,
-			&group.AdminFee, &group.TotalPrice, &group.Status, &group.ExpiresAt,
+			&group.AdminFee, &group.TotalPrice, &group.GroupStatus, &group.ExpiresAt,
 			&group.CreatedAt, &group.UpdatedAt, &group.MemberCount,
 			&appName, &appDescription, &appCategory, &appIconURL,
 		)
@@ -372,7 +374,7 @@ func (h *GroupHandler) GetGroupByInviteCode(c *gin.Context) {
 	query := `
 		SELECT 
 			g.id, g.name, g.description, g.app_id, g.max_members, g.current_members,
-			g.price_per_member, g.admin_fee, g.total_price, g.status, g.invite_code,
+			g.price_per_member, g.admin_fee, g.total_price, g.group_status, g.invite_code,
 			g.owner_id, g.expires_at, g.created_at, g.updated_at,
 			a.name as app_name, a.description as app_description, a.category, a.icon_url,
 			u.full_name as owner_name, u.email as owner_email
@@ -388,7 +390,7 @@ func (h *GroupHandler) GetGroupByInviteCode(c *gin.Context) {
 	err := h.db.QueryRow(query, inviteCode).Scan(
 		&group.ID, &group.Name, &group.Description, &group.AppID, &group.MaxMembers,
 		&group.CurrentMembers, &group.PricePerMember, &group.AdminFee, &group.TotalPrice,
-		&group.Status, &group.InviteCode, &group.OwnerID, &group.ExpiresAt,
+		&group.GroupStatus, &group.InviteCode, &group.OwnerID, &group.ExpiresAt,
 		&group.CreatedAt, &group.UpdatedAt,
 		&app.Name, &app.Description, &app.Category, &app.IconURL,
 		&ownerName, &ownerEmail,
@@ -437,14 +439,14 @@ func (h *GroupHandler) GetGroupDetails(c *gin.Context) {
 	var appTotalPrice int
 	err = h.db.QueryRow(`
 		SELECT g.id, g.name, g.description, g.app_id, g.owner_id, g.invite_code, g.max_members, 
-		       g.current_members, g.price_per_member, g.admin_fee, g.total_price, g.status, 
+		       g.current_members, g.price_per_member, g.admin_fee, g.total_price, g.group_status, 
 		       g.expires_at, g.created_at, g.updated_at, a.total_price
 		FROM groups g
 		JOIN apps a ON g.app_id = a.id
 		WHERE g.id = $1
 	`, groupID).Scan(&group.ID, &group.Name, &group.Description, &group.AppID, &group.OwnerID,
 		&group.InviteCode, &group.MaxMembers, &group.CurrentMembers, &group.PricePerMember,
-		&group.AdminFee, &group.TotalPrice, &group.Status, &group.ExpiresAt, &group.CreatedAt, &group.UpdatedAt, &appTotalPrice)
+		&group.AdminFee, &group.TotalPrice, &group.GroupStatus, &group.ExpiresAt, &group.CreatedAt, &group.UpdatedAt, &appTotalPrice)
 
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Group not found"})
@@ -472,7 +474,7 @@ func (h *GroupHandler) GetGroupDetails(c *gin.Context) {
 
 	// Get group members
 	memberRows, err := h.db.Query(`
-		SELECT gm.id, gm.group_id, gm.user_id, gm.joined_at, gm.status, gm.payment_amount,
+		SELECT gm.id, gm.group_id, gm.user_id, gm.joined_at, gm.user_status, gm.payment_amount,
 		       u.email, u.full_name, u.avatar_url
 		FROM group_members gm
 		JOIN users u ON gm.user_id = u.id
@@ -490,7 +492,7 @@ func (h *GroupHandler) GetGroupDetails(c *gin.Context) {
 	for memberRows.Next() {
 		var member models.GroupMember
 		var user models.UserResponse
-		err := memberRows.Scan(&member.ID, &member.GroupID, &member.UserID, &member.JoinedAt, &member.Status, &member.PaymentAmount, &user.Email, &user.FullName, &user.AvatarURL)
+		err := memberRows.Scan(&member.ID, &member.GroupID, &member.UserID, &member.JoinedAt, &member.UserStatus, &member.PaymentAmount, &user.Email, &user.FullName, &user.AvatarURL)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scan member"})
 			return
@@ -538,7 +540,7 @@ func (h *GroupHandler) GetGroupDetails(c *gin.Context) {
 		PricePerMember: group.PricePerMember,
 		AdminFee:       group.AdminFee,
 		TotalPrice:     group.TotalPrice,
-		Status:         group.Status,
+		GroupStatus:    group.GroupStatus,
 		ExpiresAt:      group.ExpiresAt,
 		MemberCount:    len(members),
 		CreatedAt:      group.CreatedAt,
@@ -576,7 +578,7 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 		query = `
 			SELECT 
 				g.id, g.name, g.description, g.app_id, g.max_members, g.current_members,
-				g.status, g.invite_code, g.owner_id, g.expires_at, g.created_at, g.updated_at,
+				g.group_status, g.invite_code, g.owner_id, g.is_public, g.expires_at, g.created_at, g.updated_at,
 				a.name as app_name, a.description as app_description, a.category, a.icon_url,
 				COALESCE(a.total_price, 0) as total_price,
 				u.full_name as owner_name,
@@ -588,8 +590,8 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 			FROM groups g
 			JOIN apps a ON g.app_id = a.id
 			JOIN users u ON g.owner_id = u.id
-			WHERE g.status = 'open' AND a.is_active = true AND a.is_available = true 
-			AND g.current_members < g.max_members AND g.app_id = $1
+			WHERE g.group_status = 'open' AND a.is_active = true AND a.is_available = true 
+			AND g.current_members < g.max_members AND g.app_id = $1 AND g.is_public = true
 			ORDER BY g.created_at DESC
 			LIMIT $2 OFFSET $3
 		`
@@ -598,7 +600,7 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 		query = `
 			SELECT 
 				g.id, g.name, g.description, g.app_id, g.max_members, g.current_members,
-				g.status, g.invite_code, g.owner_id, g.expires_at, g.created_at, g.updated_at,
+				g.group_status, g.invite_code, g.owner_id, g.is_public, g.expires_at, g.created_at, g.updated_at,
 				a.name as app_name, a.description as app_description, a.category, a.icon_url,
 				COALESCE(a.total_price, 0) as total_price,
 				u.full_name as owner_name,
@@ -610,8 +612,8 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 			FROM groups g
 			JOIN apps a ON g.app_id = a.id
 			JOIN users u ON g.owner_id = u.id
-			WHERE g.status = 'open' AND a.is_active = true AND a.is_available = true 
-			AND g.current_members < g.max_members
+			WHERE g.group_status = 'open' AND a.is_active = true AND a.is_available = true 
+			AND g.current_members < g.max_members AND g.is_public = true
 			ORDER BY g.created_at DESC
 			LIMIT $1 OFFSET $2
 		`
@@ -637,7 +639,7 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 		var totalPerUser float64
 		err := rows.Scan(
 			&group.ID, &group.Name, &group.Description, &group.AppID, &group.MaxMembers,
-			&group.CurrentMembers, &group.Status, &group.InviteCode, &group.OwnerID, &group.ExpiresAt,
+			&group.CurrentMembers, &group.GroupStatus, &group.InviteCode, &group.OwnerID, &group.IsPublic, &group.ExpiresAt,
 			&group.CreatedAt, &group.UpdatedAt,
 			&app.Name, &app.Description, &app.Category, &app.IconURL,
 			&app.TotalPrice,
@@ -674,7 +676,7 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 		countQuery = `
 			SELECT COUNT(*) FROM groups g
 			JOIN apps a ON g.app_id = a.id
-			WHERE g.status = 'open' AND a.is_active = true AND a.is_available = true
+			WHERE g.group_status = 'open' AND a.is_active = true AND a.is_available = true
 			AND g.current_members < g.max_members AND g.app_id = $1
 		`
 		countArgs = []interface{}{appID}
@@ -682,7 +684,7 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 		countQuery = `
 			SELECT COUNT(*) FROM groups g
 			JOIN apps a ON g.app_id = a.id
-			WHERE g.status = 'open' AND a.is_active = true AND a.is_available = true
+			WHERE g.group_status = 'open' AND a.is_active = true AND a.is_available = true
 			AND g.current_members < g.max_members
 		`
 		countArgs = []interface{}{}
@@ -708,34 +710,62 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 	groupID := c.Param("id")
 	userID, exists := c.Get("user_id")
 	if !exists {
+		log.Printf("User not authenticated for group %s", groupID)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
 
 	// Check if user is member of the group
 	var isMember bool
+	userIDUUID, ok := userID.(uuid.UUID)
+	if !ok {
+		log.Printf("Invalid user ID type for group %s", groupID)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	log.Printf("Checking membership: user %s for group %s", userIDUUID.String(), groupID)
 	err := h.db.QueryRow(`
 		SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2)
-	`, groupID, userID.(uuid.UUID)).Scan(&isMember)
+	`, groupID, userIDUUID).Scan(&isMember)
 
-	if err != nil || !isMember {
+	if err != nil {
+		log.Printf("Error checking membership: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check membership"})
+		return
+	}
+
+	if !isMember {
+		log.Printf("User %s is not a member of group %s", userIDUUID.String(), groupID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
 
 	// Get group members with price_per_member from groups table
+	// Simplified query first to debug
 	memberRows, err := h.db.Query(`
-		SELECT gm.id, gm.group_id, gm.user_id, gm.status, gm.payment_amount, gm.joined_at,
-		       gm.user_status, g.price_per_member,
-		       u.full_name, u.avatar_url
+		SELECT gm.id, gm.group_id, gm.user_id, 
+		       COALESCE(gm.role, 'member') as role, 
+		       COALESCE(gm.user_status, 'pending') as user_status, 
+		       COALESCE(gm.payment_amount, 0) as payment_amount, 
+		       gm.joined_at, 
+		       COALESCE(g.price_per_member, 0) as price_per_member,
+		       u.full_name, u.email, COALESCE(u.avatar_url, '') as avatar_url
 		FROM group_members gm
-		JOIN users u ON gm.user_id = u.id
-		JOIN groups g ON gm.group_id = g.id
-		WHERE gm.group_id = $1
-		ORDER BY gm.joined_at ASC
+		LEFT JOIN users u ON gm.user_id = u.id
+		LEFT JOIN groups g ON gm.group_id = g.id
+		WHERE gm.group_id = $1 AND COALESCE(gm.user_status, 'pending') != 'removed'
+		ORDER BY 
+			CASE COALESCE(gm.role, 'member')
+				WHEN 'owner' THEN 1 
+				WHEN 'admin' THEN 2 
+				ELSE 3 
+			END,
+			gm.joined_at ASC
 	`, groupID)
 
 	if err != nil {
+		log.Printf("Error fetching group members for group %s: %v", groupID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch group members"})
 		return
 	}
@@ -745,22 +775,18 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 	for memberRows.Next() {
 		var member models.GroupMember
 		var user models.UserResponse
-		var userStatus *string
 		var pricePerMember float64
-		err := memberRows.Scan(&member.ID, &member.GroupID, &member.UserID, &member.Status, &member.PaymentAmount, &member.JoinedAt, &userStatus, &pricePerMember, &user.FullName, &user.AvatarURL)
+		err := memberRows.Scan(&member.ID, &member.GroupID, &member.UserID, &member.Role, &member.UserStatus, &member.PaymentAmount, &member.JoinedAt, &pricePerMember, &user.FullName, &user.Email, &user.AvatarURL)
 		if err != nil {
+			log.Printf("Error scanning member: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scan member"})
 			return
 		}
 		user.ID = member.UserID
 		member.User = user
 
-		// Set user_status if available, otherwise use status
-		if userStatus != nil {
-			member.UserStatus = *userStatus
-		} else {
-			member.UserStatus = member.Status
-		}
+		// Set user_status
+		member.UserStatus = "pending"
 
 		// Set price_per_member from group
 		member.PricePerMember = pricePerMember
@@ -768,7 +794,56 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 		members = append(members, member)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"members": members})
+	log.Printf("Found %d members for group %s", len(members), groupID)
+
+	// Get group information
+	var group models.Group
+	err = h.db.QueryRow(`
+		SELECT id, name, description, app_id, max_members, current_members,
+		       price_per_member, admin_fee, total_price, group_status,
+		       invite_code, owner_id, expires_at, created_at, updated_at
+		FROM groups
+		WHERE id = $1
+	`, groupID).Scan(
+		&group.ID, &group.Name, &group.Description, &group.AppID,
+		&group.MaxMembers, &group.CurrentMembers, &group.PricePerMember,
+		&group.AdminFee, &group.TotalPrice, &group.GroupStatus,
+		&group.InviteCode, &group.OwnerID, &group.ExpiresAt,
+		&group.CreatedAt, &group.UpdatedAt,
+	)
+
+	if err != nil {
+		log.Printf("Error fetching group info: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch group info"})
+		return
+	}
+
+	// Debug: return more info
+	c.JSON(http.StatusOK, gin.H{
+		"members": members,
+		"group": gin.H{
+			"id":               group.ID,
+			"name":             group.Name,
+			"description":      group.Description,
+			"app_id":           group.AppID,
+			"max_members":      group.MaxMembers,
+			"current_members":  group.CurrentMembers,
+			"price_per_member": group.PricePerMember,
+			"admin_fee":        group.AdminFee,
+			"total_price":      group.TotalPrice,
+			"group_status":     group.GroupStatus,
+			"invite_code":      group.InviteCode,
+			"owner_id":         group.OwnerID,
+			"expires_at":       group.ExpiresAt,
+			"created_at":       group.CreatedAt,
+			"updated_at":       group.UpdatedAt,
+		},
+		"debug": gin.H{
+			"group_id":     groupID,
+			"user_id":      userIDUUID.String(),
+			"member_count": len(members),
+		},
+	})
 }
 
 // Admin endpoints for state machine management
@@ -844,7 +919,7 @@ func (h *GroupHandler) GetUserStatus(c *gin.Context) {
 		WHERE user_id = $1 AND group_id = $2
 	`, userID, groupID).Scan(
 		&member.ID, &member.GroupID, &member.UserID, &member.JoinedAt,
-		&member.Status, &member.UserStatus, &member.PaymentAmount,
+		&member.UserStatus, &member.PaymentAmount,
 		&member.PaymentDeadline, &member.PaidAt, &member.ActivatedAt,
 		&member.ExpiredAt, &member.RemovedAt, &member.RemovedReason,
 		&member.SubscriptionPeriodStart, &member.SubscriptionPeriodEnd,
@@ -871,7 +946,7 @@ func (h *GroupHandler) GetGroupStatus(c *gin.Context) {
 	`, groupID).Scan(
 		&group.ID, &group.Name, &group.Description, &group.AppID,
 		&group.MaxMembers, &group.CurrentMembers, &group.PricePerMember,
-		&group.AdminFee, &group.TotalPrice, &group.Status, &group.GroupStatus,
+		&group.AdminFee, &group.TotalPrice, &group.GroupStatus,
 		&group.InviteCode, &group.OwnerID, &group.ExpiresAt, &group.AllPaidAt,
 		&group.CreatedAt, &group.UpdatedAt,
 	)
@@ -948,6 +1023,178 @@ func (h *GroupHandler) LeaveGroup(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Successfully left group",
+	})
+}
+
+// TransferOwnership - Transfer group ownership to another member
+func (h *GroupHandler) TransferOwnership(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	groupID := c.Param("id")
+
+	var req struct {
+		NewOwnerID string `json:"new_owner_id" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Check if current user is the owner
+	var currentOwnerID string
+	err := h.db.QueryRow(`
+		SELECT owner_id FROM groups WHERE id = $1
+	`, groupID).Scan(&currentOwnerID)
+
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Group not found"})
+		return
+	}
+
+	if currentOwnerID != userID.(uuid.UUID).String() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only group owner can transfer ownership"})
+		return
+	}
+
+	// Check if new owner is a member of the group
+	var memberExists bool
+	err = h.db.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM group_members 
+			WHERE group_id = $1 AND user_id = $2 AND user_status IN ('paid', 'active')
+		)
+	`, groupID, req.NewOwnerID).Scan(&memberExists)
+
+	if err != nil || !memberExists {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "New owner must be an active member of the group"})
+		return
+	}
+
+	// Start transaction
+	tx, err := h.db.Begin()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start transaction"})
+		return
+	}
+	defer tx.Rollback()
+
+	// Update group owner
+	_, err = tx.Exec(`
+		UPDATE groups 
+		SET owner_id = $1, updated_at = NOW() 
+		WHERE id = $2
+	`, req.NewOwnerID, groupID)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to transfer ownership"})
+		return
+	}
+
+	// Update member roles - set new owner as owner, old owner as admin
+	_, err = tx.Exec(`
+		UPDATE group_members 
+		SET role = 'owner'
+		WHERE group_id = $1 AND user_id = $2
+	`, groupID, req.NewOwnerID)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update new owner role"})
+		return
+	}
+
+	_, err = tx.Exec(`
+		UPDATE group_members 
+		SET role = 'admin'
+		WHERE group_id = $1 AND user_id = $2
+	`, groupID, userID.(uuid.UUID).String())
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update old owner role"})
+		return
+	}
+
+	// Commit transaction
+	if err = tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to complete ownership transfer"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Ownership transferred successfully",
+	})
+}
+
+// DeleteGroup - Delete group (set status to removed)
+func (h *GroupHandler) DeleteGroup(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	groupID := c.Param("id")
+
+	// Check if current user is the owner
+	var currentOwnerID string
+	err := h.db.QueryRow(`
+		SELECT owner_id FROM groups WHERE id = $1
+	`, groupID).Scan(&currentOwnerID)
+
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Group not found"})
+		return
+	}
+
+	if currentOwnerID != userID.(uuid.UUID).String() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only group owner can delete the group"})
+		return
+	}
+
+	// Start transaction
+	tx, err := h.db.Begin()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start transaction"})
+		return
+	}
+	defer tx.Rollback()
+
+	// Update group status to removed
+	_, err = tx.Exec(`
+		UPDATE groups 
+		SET group_status = 'closed', updated_at = NOW() 
+		WHERE id = $1
+	`, groupID)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete group"})
+		return
+	}
+
+	// Update all members status to removed
+	_, err = tx.Exec(`
+		UPDATE group_members 
+		SET user_status = 'removed', removed_at = NOW(), removed_reason = 'Group deleted by owner'
+		WHERE group_id = $1
+	`, groupID)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update member statuses"})
+		return
+	}
+
+	// Commit transaction
+	if err = tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to complete group deletion"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Group deleted successfully",
 	})
 }
 

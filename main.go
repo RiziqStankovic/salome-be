@@ -47,9 +47,12 @@ func main() {
 	messageHandler := handlers.NewMessageHandler(db)
 	transactionHandler := handlers.NewTransactionHandler(db)
 	otpHandler := handlers.NewOTPHandler(db)
+	accountCredentialsHandler := handlers.NewAccountCredentialsHandler(db)
+	emailSubmissionHandler := handlers.NewEmailSubmissionHandler(db)
+	adminHandler := handlers.NewAdminHandler(db)
 
 	// Setup routes
-	routes.SetupRoutes(r, authHandler, groupHandler, subscriptionHandler, paymentHandler, appHandler, messageHandler, transactionHandler, otpHandler, db)
+	routes.SetupRoutes(r, authHandler, groupHandler, subscriptionHandler, paymentHandler, appHandler, messageHandler, transactionHandler, otpHandler, accountCredentialsHandler, emailSubmissionHandler, adminHandler, db)
 
 	// Start server
 	appConfig := config.GetConfig()

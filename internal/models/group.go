@@ -16,24 +16,32 @@ type Group struct {
 	PricePerMember float64       `json:"price_per_member" db:"price_per_member"`
 	AdminFee       float64       `json:"admin_fee" db:"admin_fee"`
 	TotalPrice     float64       `json:"total_price" db:"total_price"`
-	Status         string        `json:"status" db:"status"`
 	GroupStatus    string        `json:"group_status" db:"group_status"`
 	InviteCode     string        `json:"invite_code" db:"invite_code"`
 	OwnerID        uuid.UUID     `json:"owner_id" db:"owner_id"`
+	IsPublic       bool          `json:"is_public" db:"is_public"`
 	ExpiresAt      *time.Time    `json:"expires_at" db:"expires_at"`
 	AllPaidAt      *time.Time    `json:"all_paid_at" db:"all_paid_at"`
 	CreatedAt      time.Time     `json:"created_at" db:"created_at"`
 	UpdatedAt      time.Time     `json:"updated_at" db:"updated_at"`
 	Members        []GroupMember `json:"members,omitempty"`
 	App            *App          `json:"app,omitempty"`
+
+	// Admin view fields
+	OwnerName    string  `json:"owner_name,omitempty"`
+	OwnerEmail   string  `json:"owner_email,omitempty"`
+	AppName      string  `json:"app_name,omitempty"`
+	AppIcon      string  `json:"app_icon,omitempty"`
+	MembersCount int     `json:"members_count,omitempty"`
+	TotalRevenue float64 `json:"total_revenue,omitempty"`
 }
 
 type GroupMember struct {
 	ID                      string       `json:"id" db:"id"`
 	GroupID                 string       `json:"group_id" db:"group_id"`
 	UserID                  uuid.UUID    `json:"user_id" db:"user_id"`
+	Role                    string       `json:"role" db:"role"`
 	JoinedAt                time.Time    `json:"joined_at" db:"joined_at"`
-	Status                  string       `json:"status" db:"status"`
 	UserStatus              string       `json:"user_status" db:"user_status"`
 	PaymentAmount           int          `json:"payment_amount" db:"payment_amount"`
 	PricePerMember          float64      `json:"price_per_member" db:"price_per_member"`
@@ -53,6 +61,7 @@ type GroupCreateRequest struct {
 	Description string `json:"description"`
 	AppID       string `json:"app_id" binding:"required"`
 	MaxMembers  int    `json:"max_members" binding:"min=2,max=50"`
+	IsPublic    bool   `json:"is_public"`
 }
 
 type GroupJoinRequest struct {
@@ -70,10 +79,10 @@ type GroupResponse struct {
 	PricePerMember float64       `json:"price_per_member"`
 	AdminFee       float64       `json:"admin_fee"`
 	TotalPrice     float64       `json:"total_price"`
-	Status         string        `json:"status"`
 	GroupStatus    string        `json:"group_status"`
 	InviteCode     string        `json:"invite_code"`
 	OwnerID        uuid.UUID     `json:"owner_id"`
+	IsPublic       bool          `json:"is_public"`
 	ExpiresAt      *time.Time    `json:"expires_at"`
 	AllPaidAt      *time.Time    `json:"all_paid_at"`
 	CreatedAt      time.Time     `json:"created_at"`

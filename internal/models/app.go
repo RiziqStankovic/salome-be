@@ -19,8 +19,14 @@ type App struct {
 	MaxGroupMembers    int       `json:"max_group_members" db:"max_group_members"`
 	BasePrice          float64   `json:"base_price" db:"base_price"`
 	AdminFeePercentage float64   `json:"admin_fee_percentage" db:"admin_fee_percentage"`
+	HowItWorks         *string   `json:"how_it_works" db:"how_it_works"`
 	CreatedAt          time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at" db:"updated_at"`
+
+	// Admin view fields
+	GroupsCount  int     `json:"groups_count,omitempty"`
+	TotalRevenue float64 `json:"total_revenue,omitempty"`
+	AvgPrice     float64 `json:"avg_price,omitempty"`
 }
 
 type AppResponse struct {
@@ -37,6 +43,7 @@ type AppResponse struct {
 	IsActive        bool    `json:"is_active"`
 	IsAvailable     bool    `json:"is_available"`
 	MaxGroupMembers int     `json:"max_group_members"`
+	HowItWorks      *string `json:"how_it_works"`
 }
 
 type AppListResponse struct {

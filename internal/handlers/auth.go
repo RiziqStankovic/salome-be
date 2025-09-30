@@ -127,9 +127,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	// Get user from database
 	var user models.User
 	err := h.db.QueryRow(`
-		SELECT id, email, password_hash, full_name, avatar_url, status, balance, total_spent, created_at, updated_at
+		SELECT id, email, password_hash, full_name, avatar_url, status, balance, total_spent, is_admin, created_at, updated_at
 		FROM users WHERE email = $1
-	`, req.Email).Scan(&user.ID, &user.Email, &user.PasswordHash, &user.FullName, &user.AvatarURL, &user.Status, &user.Balance, &user.TotalSpent, &user.CreatedAt, &user.UpdatedAt)
+	`, req.Email).Scan(&user.ID, &user.Email, &user.PasswordHash, &user.FullName, &user.AvatarURL, &user.Status, &user.Balance, &user.TotalSpent, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
 
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
@@ -158,6 +158,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Status:     user.Status,
 		Balance:    user.Balance,
 		TotalSpent: user.TotalSpent,
+		IsAdmin:    user.IsAdmin,
 		CreatedAt:  user.CreatedAt,
 	}
 
@@ -177,9 +178,9 @@ func (h *AuthHandler) GetProfile(c *gin.Context) {
 
 	var user models.User
 	err := h.db.QueryRow(`
-		SELECT id, email, full_name, avatar_url, status, balance, total_spent, created_at, updated_at
+		SELECT id, email, full_name, avatar_url, status, balance, total_spent, is_admin, created_at, updated_at
 		FROM users WHERE id = $1
-	`, userID).Scan(&user.ID, &user.Email, &user.FullName, &user.AvatarURL, &user.Status, &user.Balance, &user.TotalSpent, &user.CreatedAt, &user.UpdatedAt)
+	`, userID).Scan(&user.ID, &user.Email, &user.FullName, &user.AvatarURL, &user.Status, &user.Balance, &user.TotalSpent, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
 
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -194,6 +195,7 @@ func (h *AuthHandler) GetProfile(c *gin.Context) {
 		Status:     user.Status,
 		Balance:    user.Balance,
 		TotalSpent: user.TotalSpent,
+		IsAdmin:    user.IsAdmin,
 		CreatedAt:  user.CreatedAt,
 	}
 

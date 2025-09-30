@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler *handlers.GroupHandler, subscriptionHandler *handlers.SubscriptionHandler, paymentHandler *handlers.PaymentHandler, appHandler *handlers.AppHandler, messageHandler *handlers.MessageHandler, transactionHandler *handlers.TransactionHandler, otpHandler *handlers.OTPHandler, db *sql.DB) {
+func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler *handlers.GroupHandler, subscriptionHandler *handlers.SubscriptionHandler, paymentHandler *handlers.PaymentHandler, appHandler *handlers.AppHandler, messageHandler *handlers.MessageHandler, transactionHandler *handlers.TransactionHandler, otpHandler *handlers.OTPHandler, accountCredentialsHandler *handlers.AccountCredentialsHandler, emailSubmissionHandler *handlers.EmailSubmissionHandler, adminHandler *handlers.AdminHandler, db *sql.DB) {
 	// API v1
 	v1 := r.Group("/api/v1")
 
@@ -42,6 +42,8 @@ func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler 
 		groups.GET("/:id", groupHandler.GetGroupDetails)
 		groups.GET("/:id/members", groupHandler.GetGroupMembers)
 		groups.PUT("/:id/status", groupHandler.UpdateGroupStatus)
+		groups.PUT("/:id/transfer-ownership", groupHandler.TransferOwnership)
+		groups.DELETE("/:id", groupHandler.DeleteGroup)
 		groups.GET("/public", groupHandler.GetPublicGroups) // Public groups for joining
 
 		// State machine endpoints - using different path structure
@@ -100,19 +102,55 @@ func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler 
 		transactions.POST("/top-up", transactionHandler.TopUpBalance)
 	}
 
+	// Account credentials routes (require active status)
+	accountCredentials := v1.Group("/account-credentials")
+	accountCredentials.Use(middleware.AuthRequiredWithStatus(db))
+	{
+		accountCredentials.GET("", accountCredentialsHandler.GetUserAccountCredentials)
+		accountCredentials.POST("", accountCredentialsHandler.CreateOrUpdateAccountCredentials)
+		accountCredentials.GET("/app/:appId", accountCredentialsHandler.GetAccountCredentialsByApp)
+	}
+
+	// Email submission routes (require active status)
+	emailSubmissions := v1.Group("/email-submissions")
+	emailSubmissions.Use(middleware.AuthRequiredWithStatus(db))
+	{
+		emailSubmissions.POST("", emailSubmissionHandler.CreateEmailSubmission)
+		emailSubmissions.GET("/:id", emailSubmissionHandler.GetEmailSubmission)
+	}
+
+	// Admin routes (require admin role)
+	admin := v1.Group("/admin")
+	admin.Use(middleware.AuthRequiredWithStatus(db))
+	admin.Use(middleware.AdminRequired(db))
+	{
+		// Email submissions admin routes
+		admin.GET("/email-submissions", emailSubmissionHandler.GetEmailSubmissions)
+		admin.PUT("/email-submissions/:id/status", emailSubmissionHandler.UpdateEmailSubmissionStatus)
+
+		// Admin management routes
+		admin.GET("/users", adminHandler.GetUsers)
+		admin.PUT("/users/status", adminHandler.UpdateUserStatus)
+		admin.GET("/groups", adminHandler.GetGroups)
+		admin.PUT("/groups/status", adminHandler.UpdateGroupStatus)
+		admin.POST("/groups", adminHandler.CreateGroup)
+		admin.PUT("/groups", adminHandler.UpdateGroup)
+		admin.DELETE("/groups", adminHandler.DeleteGroup)
+		admin.GET("/groups/:id/members", adminHandler.GetGroupMembers)
+		admin.PUT("/groups/change-owner", adminHandler.ChangeGroupOwner)
+		admin.DELETE("/groups/members", adminHandler.RemoveGroupMember)
+		admin.POST("/groups/members", adminHandler.AddGroupMember)
+		admin.GET("/apps", adminHandler.GetApps)
+		admin.PUT("/apps/status", adminHandler.UpdateAppStatus)
+		admin.POST("/apps", adminHandler.CreateApp)
+		admin.PUT("/apps", adminHandler.UpdateApp)
+		admin.DELETE("/apps", adminHandler.DeleteApp)
+	}
+
 	// Webhook routes (no auth required)
 	webhooks := v1.Group("/webhooks")
 	{
 		webhooks.POST("/midtrans", paymentHandler.HandlePaymentNotification)
-	}
-
-	// Admin routes (require admin status)
-	admin := v1.Group("/admin")
-	admin.Use(middleware.AdminRequired(db))
-	{
-		// User state management
-		admin.PUT("/users/status", groupHandler.AdminUpdateUserStatus)
-		admin.PUT("/groups/status", groupHandler.AdminUpdateGroupStatus)
 	}
 
 	// Health check

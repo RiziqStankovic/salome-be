@@ -116,15 +116,78 @@ func RunMigrations(db *sql.DB) error {
 
 	// Create account_credentials table
 	accountCredentialsTable := `
-	CREATE TABLE IF NOT EXISTS account_credentials (
-		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-		subscription_id UUID NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
-		username VARCHAR(255),
-		password_encrypted TEXT,
-		additional_info JSONB,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	CREATE TABLE IF NOT EXISTS public.account_credentials (
+		id uuid DEFAULT gen_random_uuid() NOT NULL,
+		user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		app_id varchar(255) NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+		username varchar(255) NULL,
+		email varchar(255) NULL,
+		created_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
+		updated_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
+		CONSTRAINT account_credentials_pkey PRIMARY KEY (id),
+		CONSTRAINT unique_user_app_credentials UNIQUE (user_id, app_id)
 	);`
+
+	// Create email_submissions table
+	emailSubmissionsTable := `
+	CREATE TABLE IF NOT EXISTS public.email_submissions (
+		id uuid DEFAULT gen_random_uuid() NOT NULL,
+		user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		group_id varchar(255) NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+		app_id varchar(255) NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+		email varchar(255) NOT NULL,
+		username varchar(255) NULL,
+		full_name varchar(255) NOT NULL,
+		status varchar(50) DEFAULT 'pending' NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
+		submitted_at timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL,
+		reviewed_at timestamp NULL,
+		reviewed_by uuid NULL REFERENCES users(id) ON DELETE SET NULL,
+		notes text NULL,
+		created_at timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL,
+		updated_at timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL,
+		CONSTRAINT email_submissions_pkey PRIMARY KEY (id),
+		CONSTRAINT unique_user_group_submission UNIQUE (user_id, group_id)
+	);`
+
+	// Add status fields to apps table
+	addAppsStatusFields := `
+	ALTER TABLE apps ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+	ALTER TABLE apps ADD COLUMN IF NOT EXISTS is_available BOOLEAN DEFAULT TRUE;
+	CREATE INDEX IF NOT EXISTS idx_apps_is_active ON apps(is_active);
+	CREATE INDEX IF NOT EXISTS idx_apps_is_available ON apps(is_available);
+	DO $$ 
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'check_is_active') THEN
+			ALTER TABLE apps ADD CONSTRAINT check_is_active CHECK (is_active IN (TRUE, FALSE));
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'check_is_available') THEN
+			ALTER TABLE apps ADD CONSTRAINT check_is_available CHECK (is_available IN (TRUE, FALSE));
+		END IF;
+	END $$;
+	`
+
+	// Add role column to group_members if it doesn't exist
+	addRoleColumn := `
+	ALTER TABLE group_members ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'member';
+	DO $$ 
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'check_role') THEN
+			ALTER TABLE group_members ADD CONSTRAINT check_role CHECK (role IN ('owner', 'admin', 'member'));
+		END IF;
+	END $$;
+	`
+
+	// Update group members roles
+	updateGroupMembersRoles := `
+	UPDATE group_members 
+	SET role = 'owner' 
+	WHERE user_id IN (
+		SELECT owner_id FROM groups WHERE groups.id = group_members.group_id
+	);
+	UPDATE group_members 
+	SET role = 'member' 
+	WHERE role IS NULL;
+	`
 
 	tables := []string{
 		usersTable,
@@ -134,6 +197,10 @@ func RunMigrations(db *sql.DB) error {
 		subscriptionSharesTable,
 		paymentsTable,
 		accountCredentialsTable,
+		emailSubmissionsTable,
+		addAppsStatusFields,
+		addRoleColumn,
+		updateGroupMembersRoles,
 	}
 
 	for _, table := range tables {

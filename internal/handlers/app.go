@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -41,7 +42,7 @@ func (h *AppHandler) GetApps(c *gin.Context) {
 	offset := (page - 1) * pageSize
 
 	// Build query
-	whereClause := "WHERE 1=1"
+	whereClause := "WHERE is_active = true AND is_available = true"
 	args := []interface{}{}
 	argIndex := 1
 
@@ -52,9 +53,9 @@ func (h *AppHandler) GetApps(c *gin.Context) {
 	}
 
 	if query != "" {
-		whereClause += " AND (name ILIKE $" + strconv.Itoa(argIndex) + " OR description ILIKE $" + strconv.Itoa(argIndex) + ")"
-		args = append(args, "%"+query+"%")
-		argIndex++
+		whereClause += " AND (name ILIKE $" + strconv.Itoa(argIndex) + " OR description ILIKE $" + strconv.Itoa(argIndex+1) + ")"
+		args = append(args, "%"+query+"%", "%"+query+"%")
+		argIndex += 2
 	}
 
 	if popular == "true" {
@@ -75,10 +76,11 @@ func (h *AppHandler) GetApps(c *gin.Context) {
 	if query != "" {
 		orderBy = "ORDER BY is_popular DESC, name ILIKE $" + strconv.Itoa(argIndex) + " DESC, name ASC"
 		args = append(args, query+"%")
+		argIndex++
 	}
 
 	appsQuery := `
-		SELECT id, name, description, category, icon_url, website_url, total_members, total_price, is_popular, is_active
+		SELECT id, name, description, category, icon_url, website_url, total_members, total_price, is_popular, is_active, how_it_works
 		FROM apps 
 		` + whereClause + `
 		` + orderBy + `
@@ -86,9 +88,13 @@ func (h *AppHandler) GetApps(c *gin.Context) {
 
 	args = append(args, pageSize, offset)
 
+	fmt.Printf("Executing query: %s\n", appsQuery)
+	fmt.Printf("With args: %v\n", args)
+
 	rows, err := h.db.Query(appsQuery, args...)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch apps"})
+		fmt.Printf("Query error: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch apps", "details": err.Error()})
 		return
 	}
 	defer rows.Close()
@@ -96,7 +102,7 @@ func (h *AppHandler) GetApps(c *gin.Context) {
 	var apps []models.AppResponse
 	for rows.Next() {
 		var app models.AppResponse
-		err := rows.Scan(&app.ID, &app.Name, &app.Description, &app.Category, &app.IconURL, &app.WebsiteURL, &app.TotalMembers, &app.TotalPrice, &app.IsPopular, &app.IsActive)
+		err := rows.Scan(&app.ID, &app.Name, &app.Description, &app.Category, &app.IconURL, &app.WebsiteURL, &app.TotalMembers, &app.TotalPrice, &app.IsPopular, &app.IsActive, &app.HowItWorks)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scan app"})
 			return
@@ -161,7 +167,7 @@ func (h *AppHandler) GetPopularApps(c *gin.Context) {
 	}
 
 	rows, err := h.db.Query(`
-		SELECT id, name, description, category, icon_url, website_url, total_members, total_price, is_popular
+		SELECT id, name, description, category, icon_url, website_url, total_members, total_price, is_popular, how_it_works
 		FROM apps 
 		WHERE is_popular = true
 		ORDER BY name ASC
@@ -176,7 +182,7 @@ func (h *AppHandler) GetPopularApps(c *gin.Context) {
 	var apps []models.AppResponse
 	for rows.Next() {
 		var app models.AppResponse
-		err := rows.Scan(&app.ID, &app.Name, &app.Description, &app.Category, &app.IconURL, &app.WebsiteURL, &app.TotalMembers, &app.TotalPrice, &app.IsPopular, &app.IsActive)
+		err := rows.Scan(&app.ID, &app.Name, &app.Description, &app.Category, &app.IconURL, &app.WebsiteURL, &app.TotalMembers, &app.TotalPrice, &app.IsPopular, &app.IsActive, &app.HowItWorks)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scan app"})
 			return
@@ -204,13 +210,13 @@ func (h *AppHandler) GetAppByID(c *gin.Context) {
 
 	var app models.App
 	err := h.db.QueryRow(`
-		SELECT id, name, description, category, icon_url, website_url, total_members, total_price, is_popular, is_active, is_available, max_group_members, base_price, admin_fee_percentage
+		SELECT id, name, description, category, icon_url, website_url, total_members, total_price, is_popular, is_active, is_available, max_group_members, base_price, admin_fee_percentage, how_it_works
 		FROM apps 
 		WHERE id = $1 AND is_active = true
 	`, appID).Scan(
 		&app.ID, &app.Name, &app.Description, &app.Category, &app.IconURL, &app.WebsiteURL,
 		&app.TotalMembers, &app.TotalPrice, &app.IsPopular, &app.IsActive, &app.IsAvailable,
-		&app.MaxGroupMembers, &app.BasePrice, &app.AdminFeePercentage,
+		&app.MaxGroupMembers, &app.BasePrice, &app.AdminFeePercentage, &app.HowItWorks,
 	)
 
 	if err != nil {
