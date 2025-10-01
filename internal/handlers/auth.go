@@ -20,17 +20,38 @@ import (
 
 type AuthHandler struct {
 	db           *sql.DB
-	emailService *service.EmailService
+	emailService *service.MultiProviderEmailService
 }
 
 func NewAuthHandler(db *sql.DB) *AuthHandler {
-	// Initialize email service with MailerSend
+	// Initialize multi-provider email service
 	cfg := config.GetConfig()
-	emailService := service.NewEmailService(
-		cfg.Email.MailerSend.APIKey,
-		cfg.Email.MailerSend.FromEmail,
-		cfg.Email.MailerSend.FromName,
-	)
+	var providers []service.EmailProvider
+
+	// Add MailerSend if enabled
+	if cfg.Email.MailerSend.Enabled {
+		mailerSendService := service.NewEmailService(
+			cfg.Email.MailerSend.APIKey,
+			cfg.Email.MailerSend.FromEmail,
+			cfg.Email.MailerSend.FromName,
+		)
+		providers = append(providers, mailerSendService)
+	}
+
+	// Add Resend if enabled
+	if cfg.Email.Resend.Enabled {
+		fmt.Printf("Initializing Resend service with API key: %s\n", cfg.Email.Resend.APIKey[:10]+"...")
+		resendService := service.NewResendService(
+			cfg.Email.Resend.APIKey,
+			cfg.Email.Resend.FromEmail,
+		)
+		providers = append(providers, resendService)
+		fmt.Printf("Resend service added to providers. Total providers: %d\n", len(providers))
+	} else {
+		fmt.Printf("Resend is disabled in config\n")
+	}
+
+	emailService := service.NewMultiProviderEmailService(providers)
 
 	return &AuthHandler{
 		db:           db,
@@ -107,9 +128,12 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Send OTP via email using MailerSend
+	// Send OTP via email using configured providers
 	cfg := config.GetConfig()
-	if cfg.Email.MailerSend.Enabled {
+	fmt.Printf("AuthHandler: Checking email providers - MailerSend: %v, Resend: %v\n",
+		cfg.Email.MailerSend.Enabled, cfg.Email.Resend.Enabled)
+
+	if cfg.Email.MailerSend.Enabled || cfg.Email.Resend.Enabled {
 		otpData := service.OTPEmailData{
 			Email:     req.Email,
 			Name:      req.FullName,
@@ -117,11 +141,65 @@ func (h *AuthHandler) Register(c *gin.Context) {
 			ExpiresIn: 5, // 5 minutes
 		}
 
+		fmt.Printf("AuthHandler: Attempting to send OTP email to %s\n", req.Email)
 		err = h.emailService.SendOTPEmail(c.Request.Context(), otpData)
 		if err != nil {
 			// Log error but don't fail registration
-			fmt.Printf("Failed to send OTP email to %s: %v\n", req.Email, err)
+			fmt.Printf("AuthHandler: Failed to send OTP email to %s: %v\n", req.Email, err)
+			// Show OTP in response for testing when email fails
+			userResponse := models.UserResponse{
+				ID:        userID,
+				Email:     req.Email,
+				FullName:  req.FullName,
+				Status:    "pending_verification",
+				CreatedAt: time.Now(),
+			}
+
+			token, err := utils.GenerateJWT(userID, req.Email)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+				return
+			}
+
+			fmt.Printf("AuthHandler: Email failed, showing OTP in response for %s\n", req.Email)
+			c.JSON(http.StatusCreated, gin.H{
+				"message":    "User created successfully. Please check your email for verification code.",
+				"user":       userResponse,
+				"token":      token,
+				"otp_code":   otpCode, // Show OTP for testing when email fails
+				"expires_in": "5 minutes",
+				"note":       "Email delivery failed - using OTP for testing",
+			})
+			return
+		} else {
+			fmt.Printf("AuthHandler: OTP email sent successfully to %s\n", req.Email)
 		}
+	} else {
+		fmt.Printf("AuthHandler: No email providers enabled, showing OTP in response\n")
+		// No email providers enabled, show OTP in response
+		userResponse := models.UserResponse{
+			ID:        userID,
+			Email:     req.Email,
+			FullName:  req.FullName,
+			Status:    "pending_verification",
+			CreatedAt: time.Now(),
+		}
+
+		token, err := utils.GenerateJWT(userID, req.Email)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+			return
+		}
+
+		c.JSON(http.StatusCreated, gin.H{
+			"message":    "User created successfully. Please check your email for verification code.",
+			"user":       userResponse,
+			"token":      token,
+			"otp_code":   otpCode, // Show OTP when no email providers
+			"expires_in": "5 minutes",
+			"note":       "No email providers configured - using OTP for testing",
+		})
+		return
 	}
 
 	// Generate JWT token

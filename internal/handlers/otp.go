@@ -18,17 +18,34 @@ import (
 
 type OTPHandler struct {
 	db           *sql.DB
-	emailService *service.EmailService
+	emailService *service.MultiProviderEmailService
 }
 
 func NewOTPHandler(db *sql.DB) *OTPHandler {
-	// Initialize email service with MailerSend
+	// Initialize multi-provider email service
 	cfg := config.GetConfig()
-	emailService := service.NewEmailService(
-		cfg.Email.MailerSend.APIKey,
-		cfg.Email.MailerSend.FromEmail,
-		cfg.Email.MailerSend.FromName,
-	)
+	var providers []service.EmailProvider
+
+	// Add MailerSend if enabled
+	if cfg.Email.MailerSend.Enabled {
+		mailerSendService := service.NewEmailService(
+			cfg.Email.MailerSend.APIKey,
+			cfg.Email.MailerSend.FromEmail,
+			cfg.Email.MailerSend.FromName,
+		)
+		providers = append(providers, mailerSendService)
+	}
+
+	// Add Resend if enabled
+	if cfg.Email.Resend.Enabled {
+		resendService := service.NewResendService(
+			cfg.Email.Resend.APIKey,
+			cfg.Email.Resend.FromEmail,
+		)
+		providers = append(providers, resendService)
+	}
+
+	emailService := service.NewMultiProviderEmailService(providers)
 
 	return &OTPHandler{
 		db:           db,
@@ -485,9 +502,12 @@ func (h *OTPHandler) ResendOTP(c *gin.Context) {
 		return
 	}
 
-	// Send OTP via email using MailerSend
+	// Send OTP via email using configured providers
 	cfg := config.GetConfig()
-	if cfg.Email.MailerSend.Enabled && req.Purpose == "email_verification" {
+	fmt.Printf("OTPHandler: Checking email providers for resend - MailerSend: %v, Resend: %v\n",
+		cfg.Email.MailerSend.Enabled, cfg.Email.Resend.Enabled)
+
+	if (cfg.Email.MailerSend.Enabled || cfg.Email.Resend.Enabled) && req.Purpose == "email_verification" {
 		// Get user details for email
 		var userFullName string
 		err = h.db.QueryRow("SELECT full_name FROM users WHERE id = $1", userID).Scan(&userFullName)
@@ -502,11 +522,51 @@ func (h *OTPHandler) ResendOTP(c *gin.Context) {
 			ExpiresIn: 5, // 5 minutes
 		}
 
+		fmt.Printf("OTPHandler: Attempting to resend OTP email to %s\n", req.Email)
 		err = h.emailService.SendOTPEmail(c.Request.Context(), otpData)
 		if err != nil {
 			// Log error but don't fail resend
-			fmt.Printf("Failed to send OTP email to %s: %v\n", req.Email, err)
+			fmt.Printf("OTPHandler: Failed to resend OTP email to %s: %v\n", req.Email, err)
+			// Show OTP in response for testing when email fails
+			response := models.OTPResponse{
+				ID:        otpID,
+				Email:     req.Email,
+				Purpose:   req.Purpose,
+				ExpiresAt: expiresAt,
+				CreatedAt: time.Now(),
+			}
+
+			fmt.Printf("OTPHandler: Email failed, showing OTP in response for %s\n", req.Email)
+			c.JSON(http.StatusCreated, gin.H{
+				"message":    "OTP resent successfully. Please check your email for verification code.",
+				"otp":        response,
+				"otp_code":   otpCode, // Show OTP for testing when email fails
+				"expires_in": "5 minutes",
+				"note":       "Email delivery failed - using OTP for testing",
+			})
+			return
+		} else {
+			fmt.Printf("OTPHandler: OTP email resent successfully to %s\n", req.Email)
 		}
+	} else {
+		fmt.Printf("OTPHandler: No email providers enabled or not email verification purpose\n")
+		// No email providers enabled, show OTP in response
+		response := models.OTPResponse{
+			ID:        otpID,
+			Email:     req.Email,
+			Purpose:   req.Purpose,
+			ExpiresAt: expiresAt,
+			CreatedAt: time.Now(),
+		}
+
+		c.JSON(http.StatusCreated, gin.H{
+			"message":    "OTP resent successfully. Please check your email for verification code.",
+			"otp":        response,
+			"otp_code":   otpCode, // Show OTP when no email providers
+			"expires_in": "5 minutes",
+			"note":       "No email providers configured - using OTP for testing",
+		})
+		return
 	}
 
 	response := models.OTPResponse{

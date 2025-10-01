@@ -47,9 +47,17 @@ type EmailConfig struct {
 	FromName   string           `yaml:"from_name"`
 	FromEmail  string           `yaml:"from_email"`
 	MailerSend MailerSendConfig `yaml:"mailersend"`
+	Resend     ResendConfig     `yaml:"resend"`
 }
 
 type MailerSendConfig struct {
+	APIKey    string `yaml:"api_key"`
+	FromEmail string `yaml:"from_email"`
+	FromName  string `yaml:"from_name"`
+	Enabled   bool   `yaml:"enabled"`
+}
+
+type ResendConfig struct {
 	APIKey    string `yaml:"api_key"`
 	FromEmail string `yaml:"from_email"`
 	FromName  string `yaml:"from_name"`
@@ -194,7 +202,19 @@ func setDefaults(config *Config) {
 	if config.Email.MailerSend.FromName == "" {
 		config.Email.MailerSend.FromName = "SALOME Platform"
 	}
-	config.Email.MailerSend.Enabled = true
+	config.Email.MailerSend.Enabled = false // Disabled by default, using Resend
+
+	// Resend defaults
+	if config.Email.Resend.APIKey == "" {
+		config.Email.Resend.APIKey = "re_HEUHKoJf_KoSKjuuGiuy76fBUkHHtJxNs"
+	}
+	if config.Email.Resend.FromEmail == "" {
+		config.Email.Resend.FromEmail = "noreply@salome.cloudfren.id"
+	}
+	if config.Email.Resend.FromName == "" {
+		config.Email.Resend.FromName = "SALOME Platform"
+	}
+	config.Email.Resend.Enabled = true // Enabled by default, using Resend as primary
 
 	// Redis defaults
 	if config.Redis.Host == "" {
