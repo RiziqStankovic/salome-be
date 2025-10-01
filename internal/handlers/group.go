@@ -44,20 +44,20 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 	// Get app information to calculate pricing
 	var app models.App
 	appQuery := `
-		SELECT id, name, total_price, total_members
-		FROM apps WHERE id = $1 AND is_active = true AND is_available = true
+		SELECT id, name, total_price, max_group_members
+		FROM apps WHERE id = $1 AND is_active = true
 	`
 	err := h.db.QueryRow(appQuery, req.AppID).Scan(
-		&app.ID, &app.Name, &app.TotalPrice, &app.TotalMembers,
+		&app.ID, &app.Name, &app.TotalPrice, &app.MaxGroupMembers,
 	)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "App not found or not available"})
 		return
 	}
 
-	// Use app's total_members if not specified or exceeds app limit
-	if req.MaxMembers == 0 || req.MaxMembers > app.TotalMembers {
-		req.MaxMembers = app.TotalMembers
+	// Use app's max_group_members if not specified or exceeds app limit
+	if req.MaxMembers == 0 || req.MaxMembers > app.MaxGroupMembers {
+		req.MaxMembers = app.MaxGroupMembers
 	}
 
 	// Calculate pricing
@@ -72,11 +72,11 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 	_, err = h.db.Exec(`
 		INSERT INTO groups (
 			id, name, description, app_id, owner_id, invite_code, max_members, 
-			current_members, price_per_member, admin_fee, total_price, status, is_public, created_at, updated_at
+			price_per_member, admin_fee, total_price, group_status, is_public, created_at, updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 	`, groupID, req.Name, req.Description, req.AppID, userID.(uuid.UUID), inviteCode, req.MaxMembers,
-		1, pricePerMember, adminFee, totalPrice, "open", req.IsPublic, time.Now(), time.Now())
+		pricePerMember, adminFee, totalPrice, "open", req.IsPublic, time.Now(), time.Now())
 
 	if err != nil {
 		fmt.Printf("Error creating group: %v\n", err)
@@ -97,6 +97,17 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 	}
 
 	now := time.Now()
+	// Get actual member count
+	var actualMemberCount int
+	err = h.db.QueryRow(`
+		SELECT COUNT(*) FROM group_members 
+		WHERE group_id = $1 AND user_status IN ('active', 'paid')
+	`, groupID).Scan(&actualMemberCount)
+
+	if err != nil {
+		actualMemberCount = 1 // Fallback to 1 if query fails
+	}
+
 	groupResponse := models.GroupResponse{
 		ID:             groupID,
 		Name:           req.Name,
@@ -105,8 +116,8 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 		OwnerID:        userID.(uuid.UUID),
 		InviteCode:     inviteCode,
 		MaxMembers:     req.MaxMembers,
-		CurrentMembers: 1,
-		MemberCount:    1,
+		CurrentMembers: actualMemberCount,
+		MemberCount:    actualMemberCount,
 		PricePerMember: pricePerMember,
 		AdminFee:       adminFee,
 		TotalPrice:     totalPrice,
@@ -144,6 +155,23 @@ func (h *GroupHandler) JoinGroup(c *gin.Context) {
 
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Invalid invite code"})
+		return
+	}
+
+	// Check if group is full
+	var currentMemberCount int
+	err = h.db.QueryRow(`
+		SELECT COUNT(*) FROM group_members 
+		WHERE group_id = $1 AND user_status IN ('active', 'paid')
+	`, group.ID).Scan(&currentMemberCount)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check group capacity"})
+		return
+	}
+
+	if currentMemberCount >= group.MaxMembers {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Group is full"})
 		return
 	}
 
@@ -185,19 +213,7 @@ func (h *GroupHandler) JoinGroup(c *gin.Context) {
 		return
 	}
 
-	// Update current_members count
-	_, err = h.db.Exec(`
-		UPDATE groups 
-		SET current_members = current_members + 1, updated_at = $1 
-		WHERE id = $2
-	`, time.Now(), group.ID)
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update group member count"})
-		return
-	}
-
-	// Check and update group status
+	// Update group status based on new member count
 	err = h.CheckAndUpdateGroupStatus(group.ID.String())
 	if err != nil {
 		// Log error but don't fail the join operation
@@ -219,16 +235,18 @@ func (h *GroupHandler) GetUserGroups(c *gin.Context) {
 
 	rows, err := h.db.Query(`
 		SELECT g.id, g.name, g.description, g.app_id, g.owner_id, g.invite_code, g.max_members, 
-		       g.current_members, g.price_per_member, g.admin_fee, g.total_price, g.group_status,
+		       g.price_per_member, g.admin_fee, g.total_price, g.group_status,
 		       g.expires_at, g.created_at, g.updated_at,
-		       COUNT(gm.id) as member_count,
+		       COUNT(DISTINCT gm.id) as member_count,
+		       COUNT(DISTINCT CASE WHEN gm2.user_status IN ('active', 'paid') THEN gm2.id END) as current_members,
 		       a.name as app_name, a.description as app_description, a.category, a.icon_url
 		FROM groups g
 		JOIN group_members gm ON g.id = gm.group_id
+		LEFT JOIN group_members gm2 ON g.id = gm2.group_id
 		LEFT JOIN apps a ON g.app_id = a.id
 		WHERE gm.user_id = $1
 		GROUP BY g.id, g.name, g.description, g.app_id, g.owner_id, g.invite_code, g.max_members,
-		         g.current_members, g.price_per_member, g.admin_fee, g.total_price, g.group_status,
+		         g.price_per_member, g.admin_fee, g.total_price, g.group_status,
 		         g.expires_at, g.created_at, g.updated_at,
 		         a.name, a.description, a.category, a.icon_url
 		ORDER BY g.created_at DESC
@@ -246,13 +264,17 @@ func (h *GroupHandler) GetUserGroups(c *gin.Context) {
 		var app models.App
 		var appName, appDescription, appCategory, appIconURL *string
 
+		var currentMembers int
 		err := rows.Scan(
 			&group.ID, &group.Name, &group.Description, &group.AppID, &group.OwnerID,
-			&group.InviteCode, &group.MaxMembers, &group.CurrentMembers, &group.PricePerMember,
+			&group.InviteCode, &group.MaxMembers, &group.PricePerMember,
 			&group.AdminFee, &group.TotalPrice, &group.GroupStatus, &group.ExpiresAt,
-			&group.CreatedAt, &group.UpdatedAt, &group.MemberCount,
+			&group.CreatedAt, &group.UpdatedAt, &group.MemberCount, &currentMembers,
 			&appName, &appDescription, &appCategory, &appIconURL,
 		)
+
+		// Set current_members from real-time count
+		group.CurrentMembers = currentMembers
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scan group"})
 			return
@@ -327,37 +349,40 @@ func (h *GroupHandler) UpdateGroupStatus(c *gin.Context) {
 
 // CheckAndUpdateGroupStatus automatically updates group status based on member count
 func (h *GroupHandler) CheckAndUpdateGroupStatus(groupID string) error {
-	// Get current member count
-	var currentMembers, maxMembers int
-	var status string
+	// Get actual member count from group_members table
+	var actualMemberCount, maxMembers int
+	var currentStatus string
 	err := h.db.QueryRow(`
-		SELECT current_members, max_members, status 
-		FROM groups 
-		WHERE id = $1
-	`, groupID).Scan(&currentMembers, &maxMembers, &status)
+		SELECT 
+			COALESCE(COUNT(gm.id), 0) as actual_member_count,
+			g.max_members,
+			g.group_status
+		FROM groups g
+		LEFT JOIN group_members gm ON g.id = gm.group_id AND gm.user_status IN ('active', 'paid')
+		WHERE g.id = $1
+		GROUP BY g.max_members, g.group_status
+	`, groupID).Scan(&actualMemberCount, &maxMembers, &currentStatus)
 
 	if err != nil {
 		return err
 	}
 
-	// Update status based on member count
+	// Update status based on actual member count
 	var newStatus string
-	if currentMembers >= maxMembers {
+	if actualMemberCount >= maxMembers {
 		newStatus = "full"
-	} else if currentMembers > 0 {
+	} else if actualMemberCount > 0 {
 		newStatus = "open"
 	} else {
 		newStatus = "open"
 	}
 
-	// Only update if status changed
-	if newStatus != status {
-		_, err = h.db.Exec(`
-			UPDATE groups 
-			SET status = $1, updated_at = $2 
-			WHERE id = $3
-		`, newStatus, time.Now(), groupID)
-	}
+	// Update group_status if needed
+	_, err = h.db.Exec(`
+		UPDATE groups 
+		SET group_status = $1, updated_at = $2 
+		WHERE id = $3
+	`, newStatus, time.Now(), groupID)
 
 	return err
 }
@@ -434,19 +459,28 @@ func (h *GroupHandler) GetGroupDetails(c *gin.Context) {
 		return
 	}
 
-	// Get group details with app pricing
+	// Get group details with app pricing and real-time member count
 	var group models.Group
 	var appTotalPrice int
+	var currentMemberCount int
 	err = h.db.QueryRow(`
 		SELECT g.id, g.name, g.description, g.app_id, g.owner_id, g.invite_code, g.max_members, 
-		       g.current_members, g.price_per_member, g.admin_fee, g.total_price, g.group_status, 
-		       g.expires_at, g.created_at, g.updated_at, a.total_price
+		       g.price_per_member, g.admin_fee, g.total_price, g.group_status, 
+		       g.expires_at, g.created_at, g.updated_at, a.total_price,
+		       COUNT(DISTINCT CASE WHEN gm.user_status IN ('active', 'paid') THEN gm.id END) as current_members
 		FROM groups g
 		JOIN apps a ON g.app_id = a.id
+		LEFT JOIN group_members gm ON g.id = gm.group_id
 		WHERE g.id = $1
+		GROUP BY g.id, g.name, g.description, g.app_id, g.owner_id, g.invite_code, g.max_members,
+		         g.price_per_member, g.admin_fee, g.total_price, g.group_status,
+		         g.expires_at, g.created_at, g.updated_at, a.total_price
 	`, groupID).Scan(&group.ID, &group.Name, &group.Description, &group.AppID, &group.OwnerID,
-		&group.InviteCode, &group.MaxMembers, &group.CurrentMembers, &group.PricePerMember,
-		&group.AdminFee, &group.TotalPrice, &group.GroupStatus, &group.ExpiresAt, &group.CreatedAt, &group.UpdatedAt, &appTotalPrice)
+		&group.InviteCode, &group.MaxMembers, &group.PricePerMember,
+		&group.AdminFee, &group.TotalPrice, &group.GroupStatus, &group.ExpiresAt, &group.CreatedAt, &group.UpdatedAt, &appTotalPrice, &currentMemberCount)
+
+	// Set current_members from real-time count
+	group.CurrentMembers = currentMemberCount
 
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Group not found"})
@@ -577,7 +611,7 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 	if appID != "" {
 		query = `
 			SELECT 
-				g.id, g.name, g.description, g.app_id, g.max_members, g.current_members,
+				g.id, g.name, g.description, g.app_id, g.max_members,
 				g.group_status, g.invite_code, g.owner_id, g.is_public, g.expires_at, g.created_at, g.updated_at,
 				a.name as app_name, a.description as app_description, a.category, a.icon_url,
 				COALESCE(a.total_price, 0) as total_price,
@@ -586,12 +620,18 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 				(COALESCE(a.total_price, 0) / g.max_members) as price_per_member,
 				3500 as admin_fee,
 				(COALESCE(a.total_price, 0) / g.max_members) + 3500 as total_per_user,
-				COALESCE(a.total_price, 0) as total_price
+				COALESCE(a.total_price, 0) as total_price,
+				COUNT(DISTINCT CASE WHEN gm.user_status IN ('active', 'paid') THEN gm.id END) as current_members
 			FROM groups g
 			JOIN apps a ON g.app_id = a.id
 			JOIN users u ON g.owner_id = u.id
-			WHERE g.group_status = 'open' AND a.is_active = true AND a.is_available = true 
-			AND g.current_members < g.max_members AND g.app_id = $1 AND g.is_public = true
+			LEFT JOIN group_members gm ON g.id = gm.group_id
+			WHERE g.group_status = 'open' AND a.is_active = true 
+			AND g.app_id = $1 AND g.is_public = true
+			GROUP BY g.id, g.name, g.description, g.app_id, g.max_members,
+			         g.group_status, g.invite_code, g.owner_id, g.is_public, g.expires_at, g.created_at, g.updated_at,
+			         a.name, a.description, a.category, a.icon_url, a.total_price, u.full_name
+			HAVING COUNT(DISTINCT CASE WHEN gm.user_status IN ('active', 'paid') THEN gm.id END) < g.max_members
 			ORDER BY g.created_at DESC
 			LIMIT $2 OFFSET $3
 		`
@@ -599,7 +639,7 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 	} else {
 		query = `
 			SELECT 
-				g.id, g.name, g.description, g.app_id, g.max_members, g.current_members,
+				g.id, g.name, g.description, g.app_id, g.max_members,
 				g.group_status, g.invite_code, g.owner_id, g.is_public, g.expires_at, g.created_at, g.updated_at,
 				a.name as app_name, a.description as app_description, a.category, a.icon_url,
 				COALESCE(a.total_price, 0) as total_price,
@@ -608,12 +648,18 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 				(COALESCE(a.total_price, 0) / g.max_members) as price_per_member,
 				3500 as admin_fee,
 				(COALESCE(a.total_price, 0) / g.max_members) + 3500 as total_per_user,
-				COALESCE(a.total_price, 0) as total_price
+				COALESCE(a.total_price, 0) as total_price,
+				COUNT(DISTINCT CASE WHEN gm.user_status IN ('active', 'paid') THEN gm.id END) as current_members
 			FROM groups g
 			JOIN apps a ON g.app_id = a.id
 			JOIN users u ON g.owner_id = u.id
-			WHERE g.group_status = 'open' AND a.is_active = true AND a.is_available = true 
-			AND g.current_members < g.max_members AND g.is_public = true
+			LEFT JOIN group_members gm ON g.id = gm.group_id
+			WHERE g.group_status = 'open' AND a.is_active = true 
+			AND g.is_public = true
+			GROUP BY g.id, g.name, g.description, g.app_id, g.max_members,
+			         g.group_status, g.invite_code, g.owner_id, g.is_public, g.expires_at, g.created_at, g.updated_at,
+			         a.name, a.description, a.category, a.icon_url, a.total_price, u.full_name
+			HAVING COUNT(DISTINCT CASE WHEN gm.user_status IN ('active', 'paid') THEN gm.id END) < g.max_members
 			ORDER BY g.created_at DESC
 			LIMIT $1 OFFSET $2
 		`
@@ -637,15 +683,20 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 		var app models.App
 		var ownerName string
 		var totalPerUser float64
+		var currentMembers int
 		err := rows.Scan(
 			&group.ID, &group.Name, &group.Description, &group.AppID, &group.MaxMembers,
-			&group.CurrentMembers, &group.GroupStatus, &group.InviteCode, &group.OwnerID, &group.IsPublic, &group.ExpiresAt,
+			&group.GroupStatus, &group.InviteCode, &group.OwnerID, &group.IsPublic, &group.ExpiresAt,
 			&group.CreatedAt, &group.UpdatedAt,
 			&app.Name, &app.Description, &app.Category, &app.IconURL,
 			&app.TotalPrice,
 			&ownerName,
 			&group.PricePerMember, &group.AdminFee, &totalPerUser, &group.TotalPrice,
+			&currentMembers,
 		)
+
+		// Set current_members from real-time count
+		group.CurrentMembers = currentMembers
 		if err != nil {
 			fmt.Printf("Scan error: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scan group"})
@@ -674,18 +725,30 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 
 	if appID != "" {
 		countQuery = `
-			SELECT COUNT(*) FROM groups g
-			JOIN apps a ON g.app_id = a.id
-			WHERE g.group_status = 'open' AND a.is_active = true AND a.is_available = true
-			AND g.current_members < g.max_members AND g.app_id = $1
+			SELECT COUNT(*) FROM (
+				SELECT g.id
+				FROM groups g
+				JOIN apps a ON g.app_id = a.id
+				LEFT JOIN group_members gm ON g.id = gm.group_id
+				WHERE g.group_status = 'open' AND a.is_active = true
+				AND g.app_id = $1 AND g.is_public = true
+				GROUP BY g.id, g.max_members
+				HAVING COUNT(DISTINCT CASE WHEN gm.user_status IN ('active', 'paid') THEN gm.id END) < g.max_members
+			) as filtered_groups
 		`
 		countArgs = []interface{}{appID}
 	} else {
 		countQuery = `
-			SELECT COUNT(*) FROM groups g
-			JOIN apps a ON g.app_id = a.id
-			WHERE g.group_status = 'open' AND a.is_active = true AND a.is_available = true
-			AND g.current_members < g.max_members
+			SELECT COUNT(*) FROM (
+				SELECT g.id
+				FROM groups g
+				JOIN apps a ON g.app_id = a.id
+				LEFT JOIN group_members gm ON g.id = gm.group_id
+				WHERE g.group_status = 'open' AND a.is_active = true
+				AND g.is_public = true
+				GROUP BY g.id, g.max_members
+				HAVING COUNT(DISTINCT CASE WHEN gm.user_status IN ('active', 'paid') THEN gm.id END) < g.max_members
+			) as filtered_groups
 		`
 		countArgs = []interface{}{}
 	}
@@ -735,6 +798,9 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 		return
 	}
 
+	// Debug: return membership status and continue
+	log.Printf("User %s membership status for group %s: %v", userIDUUID.String(), groupID, isMember)
+
 	if !isMember {
 		log.Printf("User %s is not a member of group %s", userIDUUID.String(), groupID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
@@ -754,7 +820,7 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 		FROM group_members gm
 		LEFT JOIN users u ON gm.user_id = u.id
 		LEFT JOIN groups g ON gm.group_id = g.id
-		WHERE gm.group_id = $1 AND COALESCE(gm.user_status, 'pending') != 'removed'
+		WHERE gm.group_id = $1
 		ORDER BY 
 			CASE COALESCE(gm.role, 'member')
 				WHEN 'owner' THEN 1 
@@ -785,8 +851,7 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 		user.ID = member.UserID
 		member.User = user
 
-		// Set user_status
-		member.UserStatus = "pending"
+		// UserStatus already set from database scan
 
 		// Set price_per_member from group
 		member.PricePerMember = pricePerMember
@@ -796,20 +861,26 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 
 	log.Printf("Found %d members for group %s", len(members), groupID)
 
-	// Get group information
+	// Get group information with real-time member count
 	var group models.Group
+	var actualMemberCount int
 	err = h.db.QueryRow(`
-		SELECT id, name, description, app_id, max_members, current_members,
-		       price_per_member, admin_fee, total_price, group_status,
-		       invite_code, owner_id, expires_at, created_at, updated_at
-		FROM groups
-		WHERE id = $1
+		SELECT g.id, g.name, g.description, g.app_id, g.max_members,
+		       g.price_per_member, g.admin_fee, g.total_price, g.group_status,
+		       g.invite_code, g.owner_id, g.expires_at, g.created_at, g.updated_at,
+		       COUNT(gm.id) as actual_member_count
+		FROM groups g
+		LEFT JOIN group_members gm ON g.id = gm.group_id AND gm.user_status IN ('active', 'paid')
+		WHERE g.id = $1
+		GROUP BY g.id, g.name, g.description, g.app_id, g.max_members,
+		         g.price_per_member, g.admin_fee, g.total_price, g.group_status,
+		         g.invite_code, g.owner_id, g.expires_at, g.created_at, g.updated_at
 	`, groupID).Scan(
 		&group.ID, &group.Name, &group.Description, &group.AppID,
-		&group.MaxMembers, &group.CurrentMembers, &group.PricePerMember,
+		&group.MaxMembers, &group.PricePerMember,
 		&group.AdminFee, &group.TotalPrice, &group.GroupStatus,
 		&group.InviteCode, &group.OwnerID, &group.ExpiresAt,
-		&group.CreatedAt, &group.UpdatedAt,
+		&group.CreatedAt, &group.UpdatedAt, &actualMemberCount,
 	)
 
 	if err != nil {
@@ -827,7 +898,7 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 			"description":      group.Description,
 			"app_id":           group.AppID,
 			"max_members":      group.MaxMembers,
-			"current_members":  group.CurrentMembers,
+			"current_members":  actualMemberCount, // Use real-time count
 			"price_per_member": group.PricePerMember,
 			"admin_fee":        group.AdminFee,
 			"total_price":      group.TotalPrice,
@@ -839,9 +910,11 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 			"updated_at":       group.UpdatedAt,
 		},
 		"debug": gin.H{
-			"group_id":     groupID,
-			"user_id":      userIDUUID.String(),
-			"member_count": len(members),
+			"group_id":               groupID,
+			"user_id":                userIDUUID.String(),
+			"member_count":           len(members),
+			"actual_member_count":    actualMemberCount,
+			"stored_current_members": group.CurrentMembers,
 		},
 	})
 }
@@ -1002,19 +1075,7 @@ func (h *GroupHandler) LeaveGroup(c *gin.Context) {
 		return
 	}
 
-	// Update current_members count
-	_, err = h.db.Exec(`
-		UPDATE groups 
-		SET current_members = current_members - 1, updated_at = $1 
-		WHERE id = $2
-	`, time.Now(), groupID)
-
-	if err != nil {
-		// Log error but don't fail the leave operation
-		fmt.Printf("Warning: Failed to update group member count: %v\n", err)
-	}
-
-	// Check and update group status
+	// Update group status based on new member count
 	err = h.CheckAndUpdateGroupStatus(groupID)
 	if err != nil {
 		// Log error but don't fail the leave operation
@@ -1175,15 +1236,14 @@ func (h *GroupHandler) DeleteGroup(c *gin.Context) {
 		return
 	}
 
-	// Update all members status to removed
+	// Delete all members from group
 	_, err = tx.Exec(`
-		UPDATE group_members 
-		SET user_status = 'removed', removed_at = NOW(), removed_reason = 'Group deleted by owner'
+		DELETE FROM group_members 
 		WHERE group_id = $1
 	`, groupID)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update member statuses"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove members"})
 		return
 	}
 
@@ -1196,6 +1256,85 @@ func (h *GroupHandler) DeleteGroup(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Group deleted successfully",
 	})
+}
+
+// UpdateGroup - Update group details (owner only)
+func (h *GroupHandler) UpdateGroup(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	groupID := c.Param("id")
+
+	var req struct {
+		Name        string `json:"name" binding:"required"`
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Check if current user is the owner
+	var currentOwnerID string
+	err := h.db.QueryRow(`
+		SELECT owner_id FROM groups WHERE id = $1
+	`, groupID).Scan(&currentOwnerID)
+
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Group not found"})
+		return
+	}
+
+	if currentOwnerID != userID.(uuid.UUID).String() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only group owner can update the group"})
+		return
+	}
+
+	// Update group
+	query := `
+		UPDATE groups 
+		SET name = $1, description = $2, updated_at = NOW()
+		WHERE id = $3
+		RETURNING id, name, description, app_id, owner_id, invite_code, max_members, 
+		          current_members, price_per_member, admin_fee, total_price, group_status, 
+		          is_public, created_at, updated_at
+	`
+
+	var group struct {
+		ID             string    `json:"id"`
+		Name           string    `json:"name"`
+		Description    *string   `json:"description"`
+		AppID          string    `json:"app_id"`
+		OwnerID        string    `json:"owner_id"`
+		InviteCode     string    `json:"invite_code"`
+		MaxMembers     int       `json:"max_members"`
+		CurrentMembers int       `json:"current_members"`
+		PricePerMember float64   `json:"price_per_member"`
+		AdminFee       float64   `json:"admin_fee"`
+		TotalPrice     float64   `json:"total_price"`
+		GroupStatus    string    `json:"group_status"`
+		IsPublic       bool      `json:"is_public"`
+		CreatedAt      time.Time `json:"created_at"`
+		UpdatedAt      time.Time `json:"updated_at"`
+	}
+
+	err = h.db.QueryRow(query, req.Name, req.Description, groupID).Scan(
+		&group.ID, &group.Name, &group.Description, &group.AppID, &group.OwnerID,
+		&group.InviteCode, &group.MaxMembers, &group.CurrentMembers,
+		&group.PricePerMember, &group.AdminFee, &group.TotalPrice,
+		&group.GroupStatus, &group.IsPublic, &group.CreatedAt, &group.UpdatedAt,
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update group"})
+		return
+	}
+
+	c.JSON(http.StatusOK, group)
 }
 
 func (h *GroupHandler) generateInviteCode() string {

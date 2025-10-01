@@ -324,3 +324,75 @@ func (h *EmailSubmissionHandler) GetEmailSubmission(c *gin.Context) {
 		"data":    submission,
 	})
 }
+
+// GetUserEmailSubmissions - Get email submissions for a specific group (user only)
+func (h *EmailSubmissionHandler) GetUserEmailSubmissions(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	groupID := c.Query("group_id")
+	if groupID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "group_id parameter is required"})
+		return
+	}
+
+	// Check if user is member of the group
+	var isMember bool
+	err := h.db.QueryRow(
+		"SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2)",
+		groupID, userID,
+	).Scan(&isMember)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check group membership"})
+		return
+	}
+
+	if !isMember {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You are not a member of this group"})
+		return
+	}
+
+	// Get email submissions for this user and group
+	query := `
+		SELECT 
+			es.id, es.user_id, es.group_id, es.app_id, es.email, es.username, es.full_name,
+			es.status, es.submitted_at, es.reviewed_at, es.reviewed_by, es.notes,
+			es.created_at, es.updated_at
+		FROM email_submissions es
+		WHERE es.user_id = $1 AND es.group_id = $2
+		ORDER BY es.submitted_at DESC
+	`
+
+	rows, err := h.db.Query(query, userID, groupID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch email submissions"})
+		return
+	}
+	defer rows.Close()
+
+	var submissions []models.EmailSubmissionResponse
+	for rows.Next() {
+		var submission models.EmailSubmissionResponse
+
+		err := rows.Scan(
+			&submission.ID, &submission.UserID, &submission.GroupID, &submission.AppID,
+			&submission.Email, &submission.Username, &submission.FullName,
+			&submission.Status, &submission.SubmittedAt, &submission.ReviewedAt, &submission.ReviewedBy, &submission.Notes,
+			&submission.CreatedAt, &submission.UpdatedAt,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scan email submission"})
+			return
+		}
+
+		submissions = append(submissions, submission)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    submissions,
+	})
+}

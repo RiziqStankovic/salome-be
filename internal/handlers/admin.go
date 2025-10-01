@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
@@ -111,20 +112,22 @@ func (h *AdminHandler) GetUsers(c *gin.Context) {
 		SELECT 
 			COUNT(*) as total,
 			COUNT(CASE WHEN status = 'active' THEN 1 END) as active,
-			COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending,
+			COUNT(CASE WHEN status = 'pending_verification' THEN 1 END) as pending_verification,
 			COUNT(CASE WHEN status = 'suspended' THEN 1 END) as suspended,
+			COUNT(CASE WHEN status = 'deleted' THEN 1 END) as deleted,
 			COUNT(CASE WHEN is_admin = true THEN 1 END) as admins
 		FROM users
 	`
 	var stats struct {
-		Total     int `json:"total"`
-		Active    int `json:"active"`
-		Pending   int `json:"pending"`
-		Suspended int `json:"suspended"`
-		Admins    int `json:"admins"`
+		Total               int `json:"total"`
+		Active              int `json:"active"`
+		PendingVerification int `json:"pending_verification"`
+		Suspended           int `json:"suspended"`
+		Deleted             int `json:"deleted"`
+		Admins              int `json:"admins"`
 	}
 
-	err = h.db.QueryRow(statsQuery).Scan(&stats.Total, &stats.Active, &stats.Pending, &stats.Suspended, &stats.Admins)
+	err = h.db.QueryRow(statsQuery).Scan(&stats.Total, &stats.Active, &stats.PendingVerification, &stats.Suspended, &stats.Deleted, &stats.Admins)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get stats"})
 		return
@@ -156,7 +159,7 @@ func (h *AdminHandler) UpdateUserStatus(c *gin.Context) {
 	}
 
 	// Validate status
-	validStatuses := []string{"active", "pending", "suspended"}
+	validStatuses := []string{"active", "pending_verification", "suspended", "deleted"}
 	if !contains(validStatuses, req.NewStatus) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status"})
 		return
@@ -182,35 +185,43 @@ func (h *AdminHandler) GetGroups(c *gin.Context) {
 	// Parse query parameters
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
-	// status := c.Query("status") // Commented out since we're not using status filter yet
+	status := c.Query("status") // Now using group_status filter
 	search := c.Query("search")
 
 	// Calculate offset
 	offset := (page - 1) * pageSize
 
-	// Build query - very simple first
+	// Build query with proper group_status field
 	query := `
 		SELECT 
 			g.id, g.name, g.description, g.app_id, g.owner_id, 
-			g.max_members, g.price_per_member, g.created_at, g.updated_at,
+			g.max_members, g.price_per_member, g.group_status, g.is_public,
+			g.created_at, g.updated_at,
 			u.full_name as owner_name, u.email as owner_email,
 			a.name as app_name, a.icon_url as app_icon,
-			0 as members_count,
-			0 as total_revenue
+			COALESCE(gm.members_count, 0) as members_count,
+			COALESCE(gp.total_collected, 0) as total_revenue
 		FROM groups g
 		LEFT JOIN users u ON g.owner_id = u.id
 		LEFT JOIN apps a ON g.app_id = a.id
+		LEFT JOIN (
+			SELECT group_id, COUNT(*) as members_count 
+			FROM group_members 
+			WHERE user_status IN ('active', 'paid')
+			GROUP BY group_id
+		) gm ON g.id = gm.group_id
+		LEFT JOIN group_payments gp ON g.id = gp.group_id
 		WHERE 1=1
 	`
 	args := []interface{}{}
 	argIndex := 1
 
-	// Skip status filter for now since field might not exist
-	// if status != "" && status != "all" {
-	// 	query += ` AND g.status = $` + strconv.Itoa(argIndex)
-	// 	args = append(args, status)
-	// 	argIndex++
-	// }
+	// Add group_status filter
+	if status != "" && status != "all" {
+		query += ` AND g.group_status = $` + strconv.Itoa(argIndex)
+		args = append(args, status)
+		argIndex++
+	}
 
 	// Add search filter
 	if search != "" {
@@ -220,8 +231,8 @@ func (h *AdminHandler) GetGroups(c *gin.Context) {
 		argIndex += 4
 	}
 
-	// Add GROUP BY and ordering
-	query += ` GROUP BY g.id, u.full_name, u.email, a.name, a.icon_url ORDER BY g.created_at DESC LIMIT $` + strconv.Itoa(argIndex) + ` OFFSET $` + strconv.Itoa(argIndex+1)
+	// Add ordering
+	query += ` ORDER BY g.created_at DESC LIMIT $` + strconv.Itoa(argIndex) + ` OFFSET $` + strconv.Itoa(argIndex+1)
 	args = append(args, pageSize, offset)
 
 	// Execute query
@@ -241,10 +252,13 @@ func (h *AdminHandler) GetGroups(c *gin.Context) {
 
 		err := rows.Scan(
 			&group.ID, &group.Name, &group.Description, &group.AppID, &group.OwnerID,
-			&group.MaxMembers, &group.PricePerMember,
+			&group.MaxMembers, &group.PricePerMember, &group.GroupStatus, &group.IsPublic,
 			&group.CreatedAt, &group.UpdatedAt, &ownerName, &ownerEmail, &appName, &appIcon,
 			&membersCount, &totalRevenue,
 		)
+
+		// Set current_members from real-time count
+		group.CurrentMembers = membersCount
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scan group"})
 			return
@@ -258,9 +272,7 @@ func (h *AdminHandler) GetGroups(c *gin.Context) {
 		group.MembersCount = membersCount
 		group.TotalRevenue = totalRevenue
 
-		// Set default values for fields that might not exist
-		group.GroupStatus = "open" // Default status
-		group.IsPublic = true      // Default public
+		// Fields are now properly retrieved from database
 
 		groups = append(groups, group)
 	}
@@ -270,12 +282,12 @@ func (h *AdminHandler) GetGroups(c *gin.Context) {
 	countArgs := []interface{}{}
 	countArgIndex := 1
 
-	// Skip status filter for now since field might not exist
-	// if status != "" && status != "all" {
-	// 	countQuery += ` AND g.status = $` + strconv.Itoa(countArgIndex)
-	// 	countArgs = append(countArgs, status)
-	// 	countArgIndex++
-	// }
+	// Add group_status filter for count
+	if status != "" && status != "all" {
+		countQuery += ` AND g.group_status = $` + strconv.Itoa(countArgIndex)
+		countArgs = append(countArgs, status)
+		countArgIndex++
+	}
 
 	if search != "" {
 		countQuery += ` AND (g.name ILIKE $` + strconv.Itoa(countArgIndex) + ` OR g.description ILIKE $` + strconv.Itoa(countArgIndex+1) + `)`
@@ -290,29 +302,34 @@ func (h *AdminHandler) GetGroups(c *gin.Context) {
 		return
 	}
 
-	// Get stats - simplified
+	// Get stats with proper group_status filtering
 	statsQuery := `
 		SELECT 
 			COUNT(*) as total,
-			COUNT(*) as active,
-			0 as pending,
-			0 as suspended,
-			COUNT(*) as public,
-			0 as private,
-			0 as total_revenue
+			COUNT(CASE WHEN group_status = 'open' THEN 1 END) as active,
+			COUNT(CASE WHEN group_status = 'private' THEN 1 END) as pending,
+			COUNT(CASE WHEN group_status = 'closed' THEN 1 END) as closed,
+			COUNT(CASE WHEN group_status = 'full' THEN 1 END) as full,
+			COUNT(CASE WHEN group_status = 'paid_group' THEN 1 END) as paid,
+			COUNT(CASE WHEN is_public = true THEN 1 END) as public,
+			COUNT(CASE WHEN is_public = false THEN 1 END) as private,
+			COALESCE(SUM(gp.total_collected), 0) as total_revenue
 		FROM groups g
+		LEFT JOIN group_payments gp ON g.id = gp.group_id
 	`
 	var stats struct {
 		Total        int     `json:"total"`
 		Active       int     `json:"active"`
 		Pending      int     `json:"pending"`
-		Suspended    int     `json:"suspended"`
+		Closed       int     `json:"closed"`
+		Full         int     `json:"full"`
+		Paid         int     `json:"paid"`
 		Public       int     `json:"public"`
 		Private      int     `json:"private"`
 		TotalRevenue float64 `json:"total_revenue"`
 	}
 
-	err = h.db.QueryRow(statsQuery).Scan(&stats.Total, &stats.Active, &stats.Pending, &stats.Suspended, &stats.Public, &stats.Private, &stats.TotalRevenue)
+	err = h.db.QueryRow(statsQuery).Scan(&stats.Total, &stats.Active, &stats.Pending, &stats.Closed, &stats.Full, &stats.Paid, &stats.Public, &stats.Private, &stats.TotalRevenue)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get stats"})
 		return
@@ -376,32 +393,41 @@ func (h *AdminHandler) GetApps(c *gin.Context) {
 	// Calculate offset
 	offset := (page - 1) * pageSize
 
-	// Build query - very simple first
+	// Build query with actual counts
 	query := `
 		SELECT 
 			a.id, a.name, a.description, a.icon_url, a.category, 
-			a.how_it_works, a.created_at, a.updated_at,
-			0 as groups_count,
-			0 as total_revenue,
-			0 as avg_price
+			a.how_it_works, a.total_price, a.max_group_members, a.admin_fee_percentage,
+			a.is_active, a.created_at, a.updated_at,
+			COALESCE(COUNT(DISTINCT g.id), 0) as groups_count,
+			COALESCE(SUM(g.total_price), 0) as total_revenue,
+			CASE 
+				WHEN COUNT(DISTINCT g.id) > 0 THEN COALESCE(SUM(g.total_price), 0) / COUNT(DISTINCT g.id)
+				ELSE 0 
+			END as avg_price
 		FROM apps a
+		LEFT JOIN groups g ON a.id = g.app_id AND g.group_status != 'closed'
 		WHERE 1=1
+		GROUP BY a.id, a.name, a.description, a.icon_url, a.category, 
+			a.how_it_works, a.total_price, a.max_group_members, a.admin_fee_percentage,
+			a.is_active, a.created_at, a.updated_at
 	`
 	args := []interface{}{}
 	argIndex := 1
 
-	// Skip status filter for now since fields might not exist
-	// if status != "" && status != "all" {
-	// 	if status == "active" {
-	// 		query += ` AND a.is_active = true`
-	// 	} else if status == "inactive" {
-	// 		query += ` AND a.is_active = false`
-	// 	} else if status == "available" {
-	// 		query += ` AND a.is_available = true`
-	// 	} else if status == "unavailable" {
-	// 		query += ` AND a.is_available = false`
-	// 	}
-	// }
+	// Add status filter
+	status := c.Query("status")
+	if status != "" && status != "all" {
+		if status == "active" {
+			query += ` AND a.is_active = true`
+		} else if status == "inactive" {
+			query += ` AND a.is_active = false`
+		} else if status == "available" {
+			query += ` AND a.is_active = true`
+		} else if status == "unavailable" {
+			query += ` AND a.is_active = false`
+		}
+	}
 
 	// Add search filter
 	if search != "" {
@@ -411,8 +437,8 @@ func (h *AdminHandler) GetApps(c *gin.Context) {
 		argIndex += 3
 	}
 
-	// Add GROUP BY and ordering
-	query += ` GROUP BY a.id ORDER BY a.created_at DESC LIMIT $` + strconv.Itoa(argIndex) + ` OFFSET $` + strconv.Itoa(argIndex+1)
+	// Add ordering and pagination
+	query += ` ORDER BY a.name ASC LIMIT $` + strconv.Itoa(argIndex) + ` OFFSET $` + strconv.Itoa(argIndex+1)
 	args = append(args, pageSize, offset)
 
 	// Execute query
@@ -431,22 +457,23 @@ func (h *AdminHandler) GetApps(c *gin.Context) {
 
 		err := rows.Scan(
 			&app.ID, &app.Name, &app.Description, &app.IconURL, &app.Category,
-			&app.HowItWorks, &app.CreatedAt, &app.UpdatedAt,
+			&app.HowItWorks, &app.TotalPrice, &app.MaxGroupMembers, &app.AdminFeePercentage,
+			&app.IsActive, &app.CreatedAt, &app.UpdatedAt,
 			&groupsCount, &totalRevenue, &avgPrice,
 		)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scan app"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scan app", "details": err.Error()})
 			return
 		}
+
+		// Debug logging
+		fmt.Printf("DEBUG: App %s - IsActive: %v, TotalPrice: %.2f, MaxGroupMembers: %d\n",
+			app.Name, app.IsActive, app.TotalPrice, app.MaxGroupMembers)
 
 		// Add additional fields for admin view
 		app.GroupsCount = groupsCount
 		app.TotalRevenue = totalRevenue
 		app.AvgPrice = avgPrice
-
-		// Set default values for fields that might not exist
-		app.IsActive = true    // Default active
-		app.IsAvailable = true // Default available
 
 		apps = append(apps, app)
 	}
@@ -536,7 +563,7 @@ func (h *AdminHandler) UpdateAppStatus(c *gin.Context) {
 	}
 
 	// Validate field
-	validFields := []string{"is_active", "is_available"}
+	validFields := []string{"is_active"}
 	if !contains(validFields, req.Field) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid field"})
 		return
@@ -560,13 +587,15 @@ func (h *AdminHandler) UpdateAppStatus(c *gin.Context) {
 // CreateApp - Create a new app
 func (h *AdminHandler) CreateApp(c *gin.Context) {
 	var req struct {
-		Name        string `json:"name" binding:"required"`
-		Description string `json:"description" binding:"required"`
-		Category    string `json:"category" binding:"required"`
-		IconURL     string `json:"icon_url"`
-		HowItWorks  string `json:"how_it_works"`
-		IsActive    *bool  `json:"is_active"`
-		IsAvailable *bool  `json:"is_available"`
+		Name               string  `json:"name" binding:"required"`
+		Description        string  `json:"description" binding:"required"`
+		Category           string  `json:"category" binding:"required"`
+		IconURL            string  `json:"icon_url"`
+		HowItWorks         string  `json:"how_it_works"`
+		TotalPrice         float64 `json:"total_price" binding:"required"`
+		MaxGroupMembers    int     `json:"max_group_members" binding:"required"`
+		AdminFeePercentage int     `json:"admin_fee_percentage" binding:"required"`
+		IsActive           *bool   `json:"is_active"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -580,33 +609,30 @@ func (h *AdminHandler) CreateApp(c *gin.Context) {
 		isActive = *req.IsActive
 	}
 
-	isAvailable := true
-	if req.IsAvailable != nil {
-		isAvailable = *req.IsAvailable
-	}
-
 	// Insert new app
 	query := `
-		INSERT INTO apps (name, description, category, icon_url, how_it_works, is_active, is_available, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
-		RETURNING id, name, description, category, icon_url, how_it_works, is_active, is_available, created_at, updated_at
+		INSERT INTO apps (name, description, category, icon_url, how_it_works, total_price, max_group_members, admin_fee_percentage, is_active, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+		RETURNING id, name, description, category, icon_url, how_it_works, total_price, max_group_members, admin_fee_percentage, is_active, created_at, updated_at
 	`
 
 	var app struct {
-		ID          string    `json:"id"`
-		Name        string    `json:"name"`
-		Description string    `json:"description"`
-		Category    string    `json:"category"`
-		IconURL     *string   `json:"icon_url"`
-		HowItWorks  *string   `json:"how_it_works"`
-		IsActive    bool      `json:"is_active"`
-		IsAvailable bool      `json:"is_available"`
-		CreatedAt   time.Time `json:"created_at"`
-		UpdatedAt   time.Time `json:"updated_at"`
+		ID                 string    `json:"id"`
+		Name               string    `json:"name"`
+		Description        string    `json:"description"`
+		Category           string    `json:"category"`
+		IconURL            *string   `json:"icon_url"`
+		HowItWorks         *string   `json:"how_it_works"`
+		TotalPrice         float64   `json:"total_price"`
+		MaxGroupMembers    int       `json:"max_group_members"`
+		AdminFeePercentage int       `json:"admin_fee_percentage"`
+		IsActive           bool      `json:"is_active"`
+		CreatedAt          time.Time `json:"created_at"`
+		UpdatedAt          time.Time `json:"updated_at"`
 	}
 
-	err := h.db.QueryRow(query, req.Name, req.Description, req.Category, req.IconURL, req.HowItWorks, isActive, isAvailable).Scan(
-		&app.ID, &app.Name, &app.Description, &app.Category, &app.IconURL, &app.HowItWorks, &app.IsActive, &app.IsAvailable, &app.CreatedAt, &app.UpdatedAt,
+	err := h.db.QueryRow(query, req.Name, req.Description, req.Category, req.IconURL, req.HowItWorks, req.TotalPrice, req.MaxGroupMembers, req.AdminFeePercentage, isActive).Scan(
+		&app.ID, &app.Name, &app.Description, &app.Category, &app.IconURL, &app.HowItWorks, &app.TotalPrice, &app.MaxGroupMembers, &app.AdminFeePercentage, &app.IsActive, &app.CreatedAt, &app.UpdatedAt,
 	)
 
 	if err != nil {
@@ -621,14 +647,16 @@ func (h *AdminHandler) CreateApp(c *gin.Context) {
 // UpdateApp - Update an existing app
 func (h *AdminHandler) UpdateApp(c *gin.Context) {
 	var req struct {
-		AppID       string `json:"app_id" binding:"required"`
-		Name        string `json:"name" binding:"required"`
-		Description string `json:"description" binding:"required"`
-		Category    string `json:"category" binding:"required"`
-		IconURL     string `json:"icon_url"`
-		HowItWorks  string `json:"how_it_works"`
-		IsActive    *bool  `json:"is_active"`
-		IsAvailable *bool  `json:"is_available"`
+		AppID              string  `json:"app_id" binding:"required"`
+		Name               string  `json:"name" binding:"required"`
+		Description        string  `json:"description" binding:"required"`
+		Category           string  `json:"category" binding:"required"`
+		IconURL            string  `json:"icon_url"`
+		HowItWorks         string  `json:"how_it_works"`
+		TotalPrice         float64 `json:"total_price" binding:"required"`
+		MaxGroupMembers    int     `json:"max_group_members" binding:"required"`
+		AdminFeePercentage int     `json:"admin_fee_percentage" binding:"required"`
+		IsActive           *bool   `json:"is_active"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -642,35 +670,33 @@ func (h *AdminHandler) UpdateApp(c *gin.Context) {
 		isActive = *req.IsActive
 	}
 
-	isAvailable := true
-	if req.IsAvailable != nil {
-		isAvailable = *req.IsAvailable
-	}
-
 	// Update app
 	query := `
 		UPDATE apps 
 		SET name = $1, description = $2, category = $3, icon_url = $4, how_it_works = $5, 
-		    is_active = $6, is_available = $7, updated_at = NOW()
-		WHERE id = $8
-		RETURNING id, name, description, category, icon_url, how_it_works, is_active, is_available, created_at, updated_at
+		    total_price = $6, max_group_members = $7, admin_fee_percentage = $8,
+		    is_active = $9, updated_at = NOW()
+		WHERE id = $10
+		RETURNING id, name, description, category, icon_url, how_it_works, total_price, max_group_members, admin_fee_percentage, is_active, created_at, updated_at
 	`
 
 	var app struct {
-		ID          string    `json:"id"`
-		Name        string    `json:"name"`
-		Description string    `json:"description"`
-		Category    string    `json:"category"`
-		IconURL     *string   `json:"icon_url"`
-		HowItWorks  *string   `json:"how_it_works"`
-		IsActive    bool      `json:"is_active"`
-		IsAvailable bool      `json:"is_available"`
-		CreatedAt   time.Time `json:"created_at"`
-		UpdatedAt   time.Time `json:"updated_at"`
+		ID                 string    `json:"id"`
+		Name               string    `json:"name"`
+		Description        string    `json:"description"`
+		Category           string    `json:"category"`
+		IconURL            *string   `json:"icon_url"`
+		HowItWorks         *string   `json:"how_it_works"`
+		TotalPrice         float64   `json:"total_price"`
+		MaxGroupMembers    int       `json:"max_group_members"`
+		AdminFeePercentage int       `json:"admin_fee_percentage"`
+		IsActive           bool      `json:"is_active"`
+		CreatedAt          time.Time `json:"created_at"`
+		UpdatedAt          time.Time `json:"updated_at"`
 	}
 
-	err := h.db.QueryRow(query, req.Name, req.Description, req.Category, req.IconURL, req.HowItWorks, isActive, isAvailable, req.AppID).Scan(
-		&app.ID, &app.Name, &app.Description, &app.Category, &app.IconURL, &app.HowItWorks, &app.IsActive, &app.IsAvailable, &app.CreatedAt, &app.UpdatedAt,
+	err := h.db.QueryRow(query, req.Name, req.Description, req.Category, req.IconURL, req.HowItWorks, req.TotalPrice, req.MaxGroupMembers, req.AdminFeePercentage, isActive, req.AppID).Scan(
+		&app.ID, &app.Name, &app.Description, &app.Category, &app.IconURL, &app.HowItWorks, &app.TotalPrice, &app.MaxGroupMembers, &app.AdminFeePercentage, &app.IsActive, &app.CreatedAt, &app.UpdatedAt,
 	)
 
 	if err != nil {
@@ -749,15 +775,15 @@ func (h *AdminHandler) CreateGroup(c *gin.Context) {
 
 	// Get app information to calculate pricing
 	var app struct {
-		ID           string  `json:"id"`
-		TotalPrice   float64 `json:"total_price"`
-		TotalMembers int     `json:"total_members"`
+		ID              string  `json:"id"`
+		TotalPrice      float64 `json:"total_price"`
+		MaxGroupMembers int     `json:"max_group_members"`
 	}
 	appQuery := `
-		SELECT id, total_price, total_members
-		FROM apps WHERE id = $1 AND is_active = true AND is_available = true
+		SELECT id, total_price, max_group_members
+		FROM apps WHERE id = $1 AND is_active = true
 	`
-	err := h.db.QueryRow(appQuery, req.AppID).Scan(&app.ID, &app.TotalPrice, &app.TotalMembers)
+	err := h.db.QueryRow(appQuery, req.AppID).Scan(&app.ID, &app.TotalPrice, &app.MaxGroupMembers)
 
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid app ID or app not available"})
@@ -765,18 +791,18 @@ func (h *AdminHandler) CreateGroup(c *gin.Context) {
 	}
 
 	// Calculate pricing
-	pricePerMember := app.TotalPrice / float64(app.TotalMembers)
+	pricePerMember := app.TotalPrice / float64(app.MaxGroupMembers)
 	adminFee := pricePerMember * 0.1 // 10% admin fee
 	totalPrice := pricePerMember + adminFee
 
 	// Insert new group
 	query := `
 		INSERT INTO groups (id, name, description, app_id, owner_id, invite_code, max_members, 
-		                   current_members, price_per_member, admin_fee, total_price, status, 
+		                   price_per_member, admin_fee, total_price, 
 		                   group_status, is_public, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
 		RETURNING id, name, description, app_id, owner_id, invite_code, max_members, 
-		          current_members, price_per_member, admin_fee, total_price, status, 
+		          price_per_member, admin_fee, total_price, 
 		          group_status, is_public, created_at, updated_at
 	`
 
@@ -800,12 +826,15 @@ func (h *AdminHandler) CreateGroup(c *gin.Context) {
 	}
 
 	err = h.db.QueryRow(query, groupID, req.Name, req.Description, req.AppID, req.OwnerID,
-		inviteCode, req.MaxMembers, 1, pricePerMember, adminFee, totalPrice, "open", "open", isPublic).Scan(
+		inviteCode, req.MaxMembers, pricePerMember, adminFee, totalPrice, "open", isPublic).Scan(
 		&group.ID, &group.Name, &group.Description, &group.AppID, &group.OwnerID,
-		&group.InviteCode, &group.MaxMembers, &group.CurrentMembers, &group.PricePerMember,
+		&group.InviteCode, &group.MaxMembers, &group.PricePerMember,
 		&group.AdminFee, &group.TotalPrice, &group.GroupStatus,
 		&group.IsPublic, &group.CreatedAt, &group.UpdatedAt,
 	)
+
+	// Set current_members to 0 for new group
+	group.CurrentMembers = 0
 
 	if err != nil {
 		log.Printf("Error creating group: %v", err)
@@ -857,7 +886,7 @@ func (h *AdminHandler) UpdateGroup(c *gin.Context) {
 		    is_public = $5, group_status = $6, updated_at = NOW()
 		WHERE id = $7
 		RETURNING id, name, description, app_id, owner_id, invite_code, max_members, 
-		          current_members, price_per_member, admin_fee, total_price, group_status, 
+		          price_per_member, admin_fee, total_price, group_status, 
 		          is_public, created_at, updated_at
 	`
 
@@ -882,10 +911,22 @@ func (h *AdminHandler) UpdateGroup(c *gin.Context) {
 	err := h.db.QueryRow(query, req.Name, req.Description, req.AppID, req.MaxMembers,
 		isPublic, req.GroupStatus, req.GroupID).Scan(
 		&group.ID, &group.Name, &group.Description, &group.AppID, &group.OwnerID,
-		&group.InviteCode, &group.MaxMembers, &group.CurrentMembers, &group.PricePerMember,
+		&group.InviteCode, &group.MaxMembers, &group.PricePerMember,
 		&group.AdminFee, &group.TotalPrice, &group.GroupStatus,
 		&group.IsPublic, &group.CreatedAt, &group.UpdatedAt,
 	)
+
+	// Get current_members from real-time count
+	var currentMemberCount int
+	err2 := h.db.QueryRow(`
+		SELECT COUNT(DISTINCT CASE WHEN gm.user_status IN ('active', 'paid') THEN gm.id END)
+		FROM group_members gm
+		WHERE gm.group_id = $1
+	`, req.GroupID).Scan(&currentMemberCount)
+
+	if err2 == nil {
+		group.CurrentMembers = currentMemberCount
+	}
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -933,27 +974,35 @@ func (h *AdminHandler) DeleteGroup(c *gin.Context) {
 	}
 	defer tx.Rollback()
 
-	// Update group status to closed (removed)
-	_, err = tx.Exec(`
-		UPDATE groups 
-		SET group_status = 'closed', updated_at = NOW() 
-		WHERE id = $1
-	`, req.GroupID)
-
+	// Delete group members first (due to foreign key constraint)
+	_, err = tx.Exec("DELETE FROM group_members WHERE group_id = $1", req.GroupID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete group"})
+		log.Printf("Error deleting group members: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete group members"})
 		return
 	}
 
-	// Update all members status to removed
-	_, err = tx.Exec(`
-		UPDATE group_members 
-		SET user_status = 'removed', removed_at = NOW(), removed_reason = 'Group deleted by admin'
-		WHERE group_id = $1
-	`, req.GroupID)
-
+	// Delete group messages
+	_, err = tx.Exec("DELETE FROM group_messages WHERE group_id = $1", req.GroupID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update member statuses"})
+		log.Printf("Error deleting group messages: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete group messages"})
+		return
+	}
+
+	// Delete group payments
+	_, err = tx.Exec("DELETE FROM group_payments WHERE group_id = $1", req.GroupID)
+	if err != nil {
+		log.Printf("Error deleting group payments: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete group payments"})
+		return
+	}
+
+	// Finally delete the group itself
+	_, err = tx.Exec("DELETE FROM groups WHERE id = $1", req.GroupID)
+	if err != nil {
+		log.Printf("Error deleting group: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete group"})
 		return
 	}
 
@@ -1205,13 +1254,11 @@ func (h *AdminHandler) RemoveGroupMember(c *gin.Context) {
 		return
 	}
 
-	// Update member status to removed
+	// Delete member from group completely
 	_, err = h.db.Exec(`
-		UPDATE group_members 
-		SET user_status = 'removed', removed_at = NOW(), 
-		    removed_reason = $1
-		WHERE group_id = $2 AND user_id = $3
-	`, req.Reason, req.GroupID, req.UserID)
+		DELETE FROM group_members 
+		WHERE group_id = $1 AND user_id = $2
+	`, req.GroupID, req.UserID)
 
 	if err != nil {
 		log.Printf("Error removing member: %v", err)
@@ -1219,17 +1266,7 @@ func (h *AdminHandler) RemoveGroupMember(c *gin.Context) {
 		return
 	}
 
-	// Update group current_members count
-	_, err = h.db.Exec(`
-		UPDATE groups 
-		SET current_members = current_members - 1, updated_at = NOW() 
-		WHERE id = $1
-	`, req.GroupID)
-
-	if err != nil {
-		log.Printf("Error updating group member count: %v", err)
-		// Don't fail the operation, just log the error
-	}
+	// Group status will be updated automatically by CheckAndUpdateGroupStatus
 
 	c.JSON(http.StatusOK, gin.H{"message": "Member removed successfully"})
 }
@@ -1259,8 +1296,12 @@ func (h *AdminHandler) AddGroupMember(c *gin.Context) {
 		CurrentMembers int    `json:"current_members"`
 	}
 	err := h.db.QueryRow(`
-		SELECT id, max_members, current_members 
-		FROM groups WHERE id = $1
+		SELECT g.id, g.max_members, 
+		       COUNT(DISTINCT CASE WHEN gm.user_status IN ('active', 'paid') THEN gm.id END) as current_members
+		FROM groups g
+		LEFT JOIN group_members gm ON g.id = gm.group_id
+		WHERE g.id = $1
+		GROUP BY g.id, g.max_members
 	`, req.GroupID).Scan(&group.ID, &group.MaxMembers, &group.CurrentMembers)
 
 	if err != nil {
@@ -1332,17 +1373,7 @@ func (h *AdminHandler) AddGroupMember(c *gin.Context) {
 		return
 	}
 
-	// Update group current_members count
-	_, err = tx.Exec(`
-		UPDATE groups 
-		SET current_members = current_members + 1, updated_at = NOW() 
-		WHERE id = $1
-	`, req.GroupID)
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update group member count"})
-		return
-	}
+	// Group status will be updated automatically by CheckAndUpdateGroupStatus
 
 	// Commit transaction
 	if err = tx.Commit(); err != nil {

@@ -41,6 +41,7 @@ func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler 
 		groups.GET("", groupHandler.GetUserGroups)
 		groups.GET("/:id", groupHandler.GetGroupDetails)
 		groups.GET("/:id/members", groupHandler.GetGroupMembers)
+		groups.PUT("/:id", groupHandler.UpdateGroup)
 		groups.PUT("/:id/status", groupHandler.UpdateGroupStatus)
 		groups.PUT("/:id/transfer-ownership", groupHandler.TransferOwnership)
 		groups.DELETE("/:id", groupHandler.DeleteGroup)
@@ -116,6 +117,7 @@ func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler 
 	emailSubmissions.Use(middleware.AuthRequiredWithStatus(db))
 	{
 		emailSubmissions.POST("", emailSubmissionHandler.CreateEmailSubmission)
+		emailSubmissions.GET("", emailSubmissionHandler.GetUserEmailSubmissions)
 		emailSubmissions.GET("/:id", emailSubmissionHandler.GetEmailSubmission)
 	}
 
