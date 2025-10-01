@@ -40,11 +40,20 @@ type ServerConfig struct {
 }
 
 type EmailConfig struct {
-	SMTPHost string `yaml:"smtp_host"`
-	SMTPPort int    `yaml:"smtp_port"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
-	FromName string `yaml:"from_name"`
+	SMTPHost   string           `yaml:"smtp_host"`
+	SMTPPort   int              `yaml:"smtp_port"`
+	Username   string           `yaml:"username"`
+	Password   string           `yaml:"password"`
+	FromName   string           `yaml:"from_name"`
+	FromEmail  string           `yaml:"from_email"`
+	MailerSend MailerSendConfig `yaml:"mailersend"`
+}
+
+type MailerSendConfig struct {
+	APIKey    string `yaml:"api_key"`
+	FromEmail string `yaml:"from_email"`
+	FromName  string `yaml:"from_name"`
+	Enabled   bool   `yaml:"enabled"`
 }
 
 type RedisConfig struct {
@@ -171,6 +180,21 @@ func setDefaults(config *Config) {
 	if config.Email.FromName == "" {
 		config.Email.FromName = "SALOME Platform"
 	}
+	if config.Email.FromEmail == "" {
+		config.Email.FromEmail = "noreply@salome.com"
+	}
+
+	// MailerSend defaults
+	if config.Email.MailerSend.APIKey == "" {
+		config.Email.MailerSend.APIKey = "mlsn.68c371b2819cdd118002ec60a6211a8570ccf30f14e303fdb3d6126372b48b7e"
+	}
+	if config.Email.MailerSend.FromEmail == "" {
+		config.Email.MailerSend.FromEmail = "noreply@salome.cloudfren.id"
+	}
+	if config.Email.MailerSend.FromName == "" {
+		config.Email.MailerSend.FromName = "SALOME Platform"
+	}
+	config.Email.MailerSend.Enabled = true
 
 	// Redis defaults
 	if config.Redis.Host == "" {

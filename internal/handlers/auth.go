@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"time"
 
+	"salome-be/internal/config"
 	"salome-be/internal/models"
+	"salome-be/internal/service"
 	"salome-be/internal/utils"
 
 	"github.com/gin-gonic/gin"
@@ -17,11 +19,23 @@ import (
 )
 
 type AuthHandler struct {
-	db *sql.DB
+	db           *sql.DB
+	emailService *service.EmailService
 }
 
 func NewAuthHandler(db *sql.DB) *AuthHandler {
-	return &AuthHandler{db: db}
+	// Initialize email service with MailerSend
+	cfg := config.GetConfig()
+	emailService := service.NewEmailService(
+		cfg.Email.MailerSend.APIKey,
+		cfg.Email.MailerSend.FromEmail,
+		cfg.Email.MailerSend.FromName,
+	)
+
+	return &AuthHandler{
+		db:           db,
+		emailService: emailService,
+	}
 }
 
 // generateOTP generates a random 6-digit OTP code
@@ -93,6 +107,23 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
+	// Send OTP via email using MailerSend
+	cfg := config.GetConfig()
+	if cfg.Email.MailerSend.Enabled {
+		otpData := service.OTPEmailData{
+			Email:     req.Email,
+			Name:      req.FullName,
+			OTPCode:   otpCode,
+			ExpiresIn: 5, // 5 minutes
+		}
+
+		err = h.emailService.SendOTPEmail(c.Request.Context(), otpData)
+		if err != nil {
+			// Log error but don't fail registration
+			fmt.Printf("Failed to send OTP email to %s: %v\n", req.Email, err)
+		}
+	}
+
 	// Generate JWT token
 	token, err := utils.GenerateJWT(userID, req.Email)
 	if err != nil {
@@ -112,7 +143,6 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		"message":    "User created successfully. Please check your email for verification code.",
 		"user":       userResponse,
 		"token":      token,
-		"otp_code":   otpCode, // Remove this in production
 		"expires_in": "5 minutes",
 	})
 }

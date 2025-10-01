@@ -8,18 +8,32 @@ import (
 	"net/http"
 	"time"
 
+	"salome-be/internal/config"
 	"salome-be/internal/models"
+	"salome-be/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 type OTPHandler struct {
-	db *sql.DB
+	db           *sql.DB
+	emailService *service.EmailService
 }
 
 func NewOTPHandler(db *sql.DB) *OTPHandler {
-	return &OTPHandler{db: db}
+	// Initialize email service with MailerSend
+	cfg := config.GetConfig()
+	emailService := service.NewEmailService(
+		cfg.Email.MailerSend.APIKey,
+		cfg.Email.MailerSend.FromEmail,
+		cfg.Email.MailerSend.FromName,
+	)
+
+	return &OTPHandler{
+		db:           db,
+		emailService: emailService,
+	}
 }
 
 // generateOTP generates a random 6-digit OTP code
@@ -272,6 +286,21 @@ func (h *OTPHandler) VerifyOTP(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user status"})
 			return
 		}
+
+		// Send welcome email after successful verification
+		cfg := config.GetConfig()
+		if cfg.Email.MailerSend.Enabled {
+			// Get user details for welcome email
+			var userFullName string
+			err = h.db.QueryRow("SELECT full_name FROM users WHERE id = $1", otp.UserID).Scan(&userFullName)
+			if err == nil {
+				err = h.emailService.SendWelcomeEmail(c.Request.Context(), otp.Email, userFullName)
+				if err != nil {
+					// Log error but don't fail verification
+					fmt.Printf("Failed to send welcome email to %s: %v\n", otp.Email, err)
+				}
+			}
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -456,7 +485,29 @@ func (h *OTPHandler) ResendOTP(c *gin.Context) {
 		return
 	}
 
-	// TODO: Send OTP via email/SMS here
+	// Send OTP via email using MailerSend
+	cfg := config.GetConfig()
+	if cfg.Email.MailerSend.Enabled && req.Purpose == "email_verification" {
+		// Get user details for email
+		var userFullName string
+		err = h.db.QueryRow("SELECT full_name FROM users WHERE id = $1", userID).Scan(&userFullName)
+		if err != nil {
+			userFullName = "User" // fallback
+		}
+
+		otpData := service.OTPEmailData{
+			Email:     req.Email,
+			Name:      userFullName,
+			OTPCode:   otpCode,
+			ExpiresIn: 5, // 5 minutes
+		}
+
+		err = h.emailService.SendOTPEmail(c.Request.Context(), otpData)
+		if err != nil {
+			// Log error but don't fail resend
+			fmt.Printf("Failed to send OTP email to %s: %v\n", req.Email, err)
+		}
+	}
 
 	response := models.OTPResponse{
 		ID:        otpID,
@@ -467,9 +518,8 @@ func (h *OTPHandler) ResendOTP(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"message":    "OTP resent successfully",
+		"message":    "OTP resent successfully. Please check your email for verification code.",
 		"otp":        response,
-		"otp_code":   otpCode, // Remove this in production
 		"expires_in": "5 minutes",
 	})
 }

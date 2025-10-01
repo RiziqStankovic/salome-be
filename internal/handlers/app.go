@@ -167,7 +167,7 @@ func (h *AppHandler) GetPopularApps(c *gin.Context) {
 	}
 
 	rows, err := h.db.Query(`
-		SELECT id, name, description, category, icon_url, website_url, max_group_members, total_price, is_popular, how_it_works
+		SELECT id, name, description, category, icon_url, website_url, max_group_members, total_price, is_popular, is_active, how_it_works
 		FROM apps 
 		WHERE is_popular = true
 		ORDER BY name ASC
