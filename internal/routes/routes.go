@@ -18,6 +18,8 @@ func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler 
 		auth.POST("/register", authHandler.Register)
 		auth.POST("/login", authHandler.Login)
 		auth.GET("/profile", middleware.AuthRequired(), authHandler.GetProfile)
+		auth.PUT("/change-password", middleware.AuthRequired(), authHandler.ChangePasswordWithOTP)
+		auth.PUT("/reset-password", authHandler.ResetPasswordWithOTP) // No auth required for forgot password
 	}
 
 	// OTP routes (no auth required, but with rate limiting)

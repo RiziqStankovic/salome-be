@@ -43,3 +43,9 @@ type OTPVerifyResponse struct {
 	Valid   bool   `json:"valid"`
 	Message string `json:"message"`
 }
+
+type OTPData struct {
+	Email     string `json:"email"`
+	OTPCode   string `json:"otp_code"`
+	ExpiresIn int    `json:"expires_in"` // in minutes
+}

@@ -211,7 +211,7 @@ func (h *AdminHandler) GetGroups(c *gin.Context) {
 			GROUP BY group_id
 		) gm ON g.id = gm.group_id
 		LEFT JOIN group_payments gp ON g.id = gp.group_id
-		WHERE 1=1
+		WHERE g.is_deleted IS NULL OR g.is_deleted = false
 	`
 	args := []interface{}{}
 	argIndex := 1
@@ -278,7 +278,7 @@ func (h *AdminHandler) GetGroups(c *gin.Context) {
 	}
 
 	// Get total count - simplified
-	countQuery := `SELECT COUNT(*) FROM groups g WHERE 1=1`
+	countQuery := `SELECT COUNT(*) FROM groups g WHERE (g.is_deleted IS NULL OR g.is_deleted = false)`
 	countArgs := []interface{}{}
 	countArgIndex := 1
 
@@ -316,6 +316,7 @@ func (h *AdminHandler) GetGroups(c *gin.Context) {
 			COALESCE(SUM(gp.total_collected), 0) as total_revenue
 		FROM groups g
 		LEFT JOIN group_payments gp ON g.id = gp.group_id
+		WHERE g.is_deleted IS NULL OR g.is_deleted = false
 	`
 	var stats struct {
 		Total        int     `json:"total"`
@@ -406,7 +407,7 @@ func (h *AdminHandler) GetApps(c *gin.Context) {
 				ELSE 0 
 			END as avg_price
 		FROM apps a
-		LEFT JOIN groups g ON a.id = g.app_id AND g.group_status != 'closed'
+		LEFT JOIN groups g ON a.id = g.app_id AND g.group_status != 'closed' AND (g.is_deleted IS NULL OR g.is_deleted = false)
 		WHERE 1=1
 		GROUP BY a.id, a.name, a.description, a.icon_url, a.category, 
 			a.how_it_works, a.total_price, a.max_group_members, a.admin_fee_percentage,
@@ -609,10 +610,13 @@ func (h *AdminHandler) CreateApp(c *gin.Context) {
 		isActive = *req.IsActive
 	}
 
+	// Generate unique ID for the app
+	appID := uuid.New().String()
+
 	// Insert new app
 	query := `
-		INSERT INTO apps (name, description, category, icon_url, how_it_works, total_price, max_group_members, admin_fee_percentage, is_active, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+		INSERT INTO apps (id, name, description, category, icon_url, how_it_works, total_price, max_group_members, admin_fee_percentage, is_active, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
 		RETURNING id, name, description, category, icon_url, how_it_works, total_price, max_group_members, admin_fee_percentage, is_active, created_at, updated_at
 	`
 
@@ -631,7 +635,7 @@ func (h *AdminHandler) CreateApp(c *gin.Context) {
 		UpdatedAt          time.Time `json:"updated_at"`
 	}
 
-	err := h.db.QueryRow(query, req.Name, req.Description, req.Category, req.IconURL, req.HowItWorks, req.TotalPrice, req.MaxGroupMembers, req.AdminFeePercentage, isActive).Scan(
+	err := h.db.QueryRow(query, appID, req.Name, req.Description, req.Category, req.IconURL, req.HowItWorks, req.TotalPrice, req.MaxGroupMembers, req.AdminFeePercentage, isActive).Scan(
 		&app.ID, &app.Name, &app.Description, &app.Category, &app.IconURL, &app.HowItWorks, &app.TotalPrice, &app.MaxGroupMembers, &app.AdminFeePercentage, &app.IsActive, &app.CreatedAt, &app.UpdatedAt,
 	)
 
@@ -974,35 +978,27 @@ func (h *AdminHandler) DeleteGroup(c *gin.Context) {
 	}
 	defer tx.Rollback()
 
-	// Delete group members first (due to foreign key constraint)
+	// Soft delete: Mark group as deleted instead of hard delete
+	// This preserves transaction history and allows for data recovery
+	_, err = tx.Exec(`
+		UPDATE groups 
+		SET deleted_at = NOW(), 
+		    is_deleted = true,
+		    group_status = 'closed',
+		    updated_at = NOW()
+		WHERE id = $1
+	`, req.GroupID)
+	if err != nil {
+		log.Printf("Error soft deleting group: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete group"})
+		return
+	}
+
+	// Remove all members from the group (but keep transaction history)
 	_, err = tx.Exec("DELETE FROM group_members WHERE group_id = $1", req.GroupID)
 	if err != nil {
-		log.Printf("Error deleting group members: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete group members"})
-		return
-	}
-
-	// Delete group messages
-	_, err = tx.Exec("DELETE FROM group_messages WHERE group_id = $1", req.GroupID)
-	if err != nil {
-		log.Printf("Error deleting group messages: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete group messages"})
-		return
-	}
-
-	// Delete group payments
-	_, err = tx.Exec("DELETE FROM group_payments WHERE group_id = $1", req.GroupID)
-	if err != nil {
-		log.Printf("Error deleting group payments: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete group payments"})
-		return
-	}
-
-	// Finally delete the group itself
-	_, err = tx.Exec("DELETE FROM groups WHERE id = $1", req.GroupID)
-	if err != nil {
-		log.Printf("Error deleting group: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete group"})
+		log.Printf("Error removing group members: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove group members"})
 		return
 	}
 
@@ -1300,7 +1296,7 @@ func (h *AdminHandler) AddGroupMember(c *gin.Context) {
 		       COUNT(DISTINCT CASE WHEN gm.user_status IN ('active', 'paid') THEN gm.id END) as current_members
 		FROM groups g
 		LEFT JOIN group_members gm ON g.id = gm.group_id
-		WHERE g.id = $1
+		WHERE g.id = $1 AND (g.is_deleted IS NULL OR g.is_deleted = false)
 		GROUP BY g.id, g.max_members
 	`, req.GroupID).Scan(&group.ID, &group.MaxMembers, &group.CurrentMembers)
 

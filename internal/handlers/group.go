@@ -150,7 +150,7 @@ func (h *GroupHandler) JoinGroup(c *gin.Context) {
 	var group models.Group
 	err := h.db.QueryRow(`
 		SELECT id, name, description, owner_id, invite_code, max_members, created_at, updated_at
-		FROM groups WHERE invite_code = $1
+		FROM groups WHERE invite_code = $1 AND (is_deleted IS NULL OR is_deleted = false)
 	`, req.InviteCode).Scan(&group.ID, &group.Name, &group.Description, &group.OwnerID, &group.InviteCode, &group.MaxMembers, &group.CreatedAt, &group.UpdatedAt)
 
 	if err != nil {
@@ -206,7 +206,7 @@ func (h *GroupHandler) JoinGroup(c *gin.Context) {
 	_, err = h.db.Exec(`
 		INSERT INTO group_members (id, group_id, user_id, role, joined_at, user_status, payment_amount)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, uuid.New().String(), group.ID, userID.(uuid.UUID), "member", time.Now(), "pending", 0)
+	`, uuid.New().String(), group.ID, userID.(uuid.UUID), "member", time.Now(), "active", 0)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to join group"})
@@ -244,7 +244,7 @@ func (h *GroupHandler) GetUserGroups(c *gin.Context) {
 		JOIN group_members gm ON g.id = gm.group_id
 		LEFT JOIN group_members gm2 ON g.id = gm2.group_id
 		LEFT JOIN apps a ON g.app_id = a.id
-		WHERE gm.user_id = $1
+		WHERE gm.user_id = $1 AND (g.is_deleted IS NULL OR g.is_deleted = false)
 		GROUP BY g.id, g.name, g.description, g.app_id, g.owner_id, g.invite_code, g.max_members,
 		         g.price_per_member, g.admin_fee, g.total_price, g.group_status,
 		         g.expires_at, g.created_at, g.updated_at,
@@ -320,7 +320,7 @@ func (h *GroupHandler) UpdateGroupStatus(c *gin.Context) {
 
 	// Verify user is owner of the group
 	var ownerID string
-	ownerQuery := `SELECT owner_id FROM groups WHERE id = $1`
+	ownerQuery := `SELECT owner_id FROM groups WHERE id = $1 AND (is_deleted IS NULL OR is_deleted = false)`
 	err := h.db.QueryRow(ownerQuery, groupID).Scan(&ownerID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Group not found"})
@@ -359,7 +359,7 @@ func (h *GroupHandler) CheckAndUpdateGroupStatus(groupID string) error {
 			g.group_status
 		FROM groups g
 		LEFT JOIN group_members gm ON g.id = gm.group_id AND gm.user_status IN ('active', 'paid')
-		WHERE g.id = $1
+		WHERE g.id = $1 AND (g.is_deleted IS NULL OR g.is_deleted = false)
 		GROUP BY g.max_members, g.group_status
 	`, groupID).Scan(&actualMemberCount, &maxMembers, &currentStatus)
 
@@ -398,27 +398,35 @@ func (h *GroupHandler) GetGroupByInviteCode(c *gin.Context) {
 	// Query group with app and owner information
 	query := `
 		SELECT 
-			g.id, g.name, g.description, g.app_id, g.max_members, g.current_members,
+			g.id, g.name, g.description, g.app_id, g.max_members,
 			g.price_per_member, g.admin_fee, g.total_price, g.group_status, g.invite_code,
 			g.owner_id, g.expires_at, g.created_at, g.updated_at,
 			a.name as app_name, a.description as app_description, a.category, a.icon_url,
-			u.full_name as owner_name, u.email as owner_email
+			u.full_name as owner_name, u.email as owner_email,
+			COUNT(DISTINCT CASE WHEN gm.user_status IN ('active', 'paid') THEN gm.id END) as current_members
 		FROM groups g
 		JOIN apps a ON g.app_id = a.id
 		JOIN users u ON g.owner_id = u.id
-		WHERE g.invite_code = $1
+		LEFT JOIN group_members gm ON g.id = gm.group_id
+		WHERE g.invite_code = $1 AND (g.is_deleted IS NULL OR g.is_deleted = false)
+		GROUP BY g.id, g.name, g.description, g.app_id, g.max_members,
+		         g.price_per_member, g.admin_fee, g.total_price, g.group_status, g.invite_code,
+		         g.owner_id, g.expires_at, g.created_at, g.updated_at,
+		         a.name, a.description, a.category, a.icon_url,
+		         u.full_name, u.email
 	`
 
 	var group models.GroupResponse
 	var app models.App
 	var ownerName, ownerEmail string
+	var currentMembers int
 	err := h.db.QueryRow(query, inviteCode).Scan(
 		&group.ID, &group.Name, &group.Description, &group.AppID, &group.MaxMembers,
-		&group.CurrentMembers, &group.PricePerMember, &group.AdminFee, &group.TotalPrice,
+		&group.PricePerMember, &group.AdminFee, &group.TotalPrice,
 		&group.GroupStatus, &group.InviteCode, &group.OwnerID, &group.ExpiresAt,
 		&group.CreatedAt, &group.UpdatedAt,
 		&app.Name, &app.Description, &app.Category, &app.IconURL,
-		&ownerName, &ownerEmail,
+		&ownerName, &ownerEmail, &currentMembers,
 	)
 
 	if err != nil {
@@ -429,6 +437,10 @@ func (h *GroupHandler) GetGroupByInviteCode(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch group"})
 		return
 	}
+
+	// Set current members count
+	group.CurrentMembers = currentMembers
+	group.MemberCount = currentMembers
 
 	// Set app and owner information
 	group.App = &app
@@ -471,7 +483,7 @@ func (h *GroupHandler) GetGroupDetails(c *gin.Context) {
 		FROM groups g
 		JOIN apps a ON g.app_id = a.id
 		LEFT JOIN group_members gm ON g.id = gm.group_id
-		WHERE g.id = $1
+		WHERE g.id = $1 AND (g.is_deleted IS NULL OR g.is_deleted = false)
 		GROUP BY g.id, g.name, g.description, g.app_id, g.owner_id, g.invite_code, g.max_members,
 		         g.price_per_member, g.admin_fee, g.total_price, g.group_status,
 		         g.expires_at, g.created_at, g.updated_at, a.total_price
@@ -627,7 +639,7 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 			JOIN users u ON g.owner_id = u.id
 			LEFT JOIN group_members gm ON g.id = gm.group_id
 			WHERE g.group_status = 'open' AND a.is_active = true 
-			AND g.app_id = $1 AND g.is_public = true
+			AND g.app_id = $1 AND g.is_public = true AND (g.is_deleted IS NULL OR g.is_deleted = false)
 			GROUP BY g.id, g.name, g.description, g.app_id, g.max_members,
 			         g.group_status, g.invite_code, g.owner_id, g.is_public, g.expires_at, g.created_at, g.updated_at,
 			         a.name, a.description, a.category, a.icon_url, a.total_price, u.full_name
@@ -655,7 +667,7 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 			JOIN users u ON g.owner_id = u.id
 			LEFT JOIN group_members gm ON g.id = gm.group_id
 			WHERE g.group_status = 'open' AND a.is_active = true 
-			AND g.is_public = true
+			AND g.is_public = true AND (g.is_deleted IS NULL OR g.is_deleted = false)
 			GROUP BY g.id, g.name, g.description, g.app_id, g.max_members,
 			         g.group_status, g.invite_code, g.owner_id, g.is_public, g.expires_at, g.created_at, g.updated_at,
 			         a.name, a.description, a.category, a.icon_url, a.total_price, u.full_name
@@ -666,8 +678,8 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 		args = []interface{}{pageSize, offset}
 	}
 
-	fmt.Printf("Executing query: %s\n", query)
-	fmt.Printf("With args: %v\n", args)
+	// fmt.Printf("Executing query: %s\n", query)
+	// fmt.Printf("With args: %v\n", args)
 
 	rows, err := h.db.Query(query, args...)
 	if err != nil {
@@ -715,8 +727,8 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 		groups = append(groups, group)
 	}
 
-	fmt.Printf("Found %d groups\n", len(groups))
-	fmt.Printf("Groups: %v\n", groups)
+	// fmt.Printf("Found %d groups\n", len(groups))
+	// fmt.Printf("Groups: %v\n", groups)
 
 	// Get total count with same filters
 	var total int
@@ -731,7 +743,7 @@ func (h *GroupHandler) GetPublicGroups(c *gin.Context) {
 				JOIN apps a ON g.app_id = a.id
 				LEFT JOIN group_members gm ON g.id = gm.group_id
 				WHERE g.group_status = 'open' AND a.is_active = true
-				AND g.app_id = $1 AND g.is_public = true
+				AND g.app_id = $1 AND g.is_public = true AND (g.is_deleted IS NULL OR g.is_deleted = false)
 				GROUP BY g.id, g.max_members
 				HAVING COUNT(DISTINCT CASE WHEN gm.user_status IN ('active', 'paid') THEN gm.id END) < g.max_members
 			) as filtered_groups
@@ -1053,7 +1065,7 @@ func (h *GroupHandler) LeaveGroup(c *gin.Context) {
 
 	// Check if user is the owner
 	var ownerID string
-	err = h.db.QueryRow(`SELECT owner_id FROM groups WHERE id = $1`, groupID).Scan(&ownerID)
+	err = h.db.QueryRow(`SELECT owner_id FROM groups WHERE id = $1 AND (is_deleted IS NULL OR is_deleted = false)`, groupID).Scan(&ownerID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Group not found"})
 		return
@@ -1109,7 +1121,7 @@ func (h *GroupHandler) TransferOwnership(c *gin.Context) {
 	// Check if current user is the owner
 	var currentOwnerID string
 	err := h.db.QueryRow(`
-		SELECT owner_id FROM groups WHERE id = $1
+		SELECT owner_id FROM groups WHERE id = $1 AND (is_deleted IS NULL OR is_deleted = false)
 	`, groupID).Scan(&currentOwnerID)
 
 	if err != nil {
@@ -1203,7 +1215,7 @@ func (h *GroupHandler) DeleteGroup(c *gin.Context) {
 	// Check if current user is the owner
 	var currentOwnerID string
 	err := h.db.QueryRow(`
-		SELECT owner_id FROM groups WHERE id = $1
+		SELECT owner_id FROM groups WHERE id = $1 AND (is_deleted IS NULL OR is_deleted = false)
 	`, groupID).Scan(&currentOwnerID)
 
 	if err != nil {
@@ -1281,7 +1293,7 @@ func (h *GroupHandler) UpdateGroup(c *gin.Context) {
 	// Check if current user is the owner
 	var currentOwnerID string
 	err := h.db.QueryRow(`
-		SELECT owner_id FROM groups WHERE id = $1
+		SELECT owner_id FROM groups WHERE id = $1 AND (is_deleted IS NULL OR is_deleted = false)
 	`, groupID).Scan(&currentOwnerID)
 
 	if err != nil {

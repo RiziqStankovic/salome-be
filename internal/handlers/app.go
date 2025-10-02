@@ -88,8 +88,8 @@ func (h *AppHandler) GetApps(c *gin.Context) {
 
 	args = append(args, pageSize, offset)
 
-	fmt.Printf("Executing query: %s\n", appsQuery)
-	fmt.Printf("With args: %v\n", args)
+	// fmt.Printf("Executing query: %s\n", appsQuery)
+	// fmt.Printf("With args: %v\n", args)
 
 	rows, err := h.db.Query(appsQuery, args...)
 	if err != nil {
