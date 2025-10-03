@@ -44,7 +44,7 @@ func (h *TransactionHandler) GetUserTransactions(c *gin.Context) {
 	query := `
 		SELECT 
 			id, user_id, group_id, type, amount, balance_before, balance_after,
-			description, payment_method, payment_reference, status, created_at, updated_at
+			description, payment_method, payment_reference, payment_link_id, status, created_at, updated_at
 		FROM transactions
 		WHERE user_id = $1
 		ORDER BY created_at DESC
@@ -64,7 +64,7 @@ func (h *TransactionHandler) GetUserTransactions(c *gin.Context) {
 		err := rows.Scan(
 			&txn.ID, &txn.UserID, &txn.GroupID, &txn.Type, &txn.Amount,
 			&txn.BalanceBefore, &txn.BalanceAfter, &txn.Description,
-			&txn.PaymentMethod, &txn.PaymentReference, &txn.Status,
+			&txn.PaymentMethod, &txn.PaymentReference, &txn.PaymentLinkID, &txn.Status,
 			&txn.CreatedAt, &txn.UpdatedAt,
 		)
 		if err != nil {
@@ -170,7 +170,7 @@ func (h *TransactionHandler) CreateTransaction(c *gin.Context) {
 		return
 	}
 
-	// Update total_spent if it's a payment
+	// Update total_spent if it's a payment (only for successful transactions)
 	if req.Type == "group_payment" {
 		updateSpentQuery := `UPDATE users SET total_spent = total_spent + $1, updated_at = $2 WHERE id = $3`
 		_, err = tx.Exec(updateSpentQuery, req.Amount, now, userID)

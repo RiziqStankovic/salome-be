@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -26,6 +27,45 @@ func (h *MessageHandler) GetGroupMessages(c *gin.Context) {
 	if groupID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Group ID is required"})
 		return
+	}
+
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// Check if user is admin
+	var isAdmin bool
+	err := h.db.QueryRow(`
+		SELECT is_admin FROM users WHERE id = $1
+	`, userID.(uuid.UUID)).Scan(&isAdmin)
+	if err != nil {
+		fmt.Printf("Error checking admin role for user %v in messages: %v\n", userID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check user role"})
+		return
+	}
+
+	fmt.Printf("User %v is admin for messages: %v\n", userID, isAdmin)
+
+	// If not admin, check if user is member of the group
+	if !isAdmin {
+		var isMember bool
+		err := h.db.QueryRow(`
+			SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2)
+		`, groupID, userID.(uuid.UUID)).Scan(&isMember)
+
+		if err != nil {
+			fmt.Printf("Error checking membership for user %v in group %s for messages: %v\n", userID, groupID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check membership"})
+			return
+		}
+
+		if !isMember {
+			fmt.Printf("User %v is not a member of group %s for messages\n", userID, groupID)
+			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+			return
+		}
 	}
 
 	// Get pagination parameters
@@ -113,13 +153,35 @@ func (h *MessageHandler) CreateGroupMessage(c *gin.Context) {
 		return
 	}
 
-	// Verify user is a member of the group
-	var isMember bool
-	memberQuery := `SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2)`
-	err := h.db.QueryRow(memberQuery, groupID, userID.(uuid.UUID)).Scan(&isMember)
-	if err != nil || !isMember {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You are not a member of this group"})
+	// Check if user is admin
+	var isAdmin bool
+	err := h.db.QueryRow(`
+		SELECT is_admin FROM users WHERE id = $1
+	`, userID.(uuid.UUID)).Scan(&isAdmin)
+	if err != nil {
+		fmt.Printf("Error checking admin role for user %v in CreateGroupMessage: %v\n", userID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check user role"})
 		return
+	}
+
+	fmt.Printf("User %v is admin for CreateGroupMessage: %v\n", userID, isAdmin)
+
+	// If not admin, verify user is a member of the group
+	if !isAdmin {
+		var isMember bool
+		memberQuery := `SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2)`
+		err := h.db.QueryRow(memberQuery, groupID, userID.(uuid.UUID)).Scan(&isMember)
+		if err != nil {
+			fmt.Printf("Error checking membership for user %v in group %s for CreateGroupMessage: %v\n", userID, groupID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check membership"})
+			return
+		}
+
+		if !isMember {
+			fmt.Printf("User %v is not a member of group %s for CreateGroupMessage\n", userID, groupID)
+			c.JSON(http.StatusForbidden, gin.H{"error": "You are not a member of this group"})
+			return
+		}
 	}
 
 	// Set default message type if not provided

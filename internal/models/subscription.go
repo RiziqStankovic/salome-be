@@ -1,45 +1,47 @@
 package models
 
-import (
-	"time"
+import "time"
 
-	"github.com/google/uuid"
-)
-
-type Subscription struct {
-	ID              uuid.UUID  `json:"id" db:"id"`
-	GroupID         uuid.UUID  `json:"group_id" db:"group_id"`
-	ServiceName     string     `json:"service_name" db:"service_name"`
-	ServiceURL      *string    `json:"service_url" db:"service_url"`
-	PlanName        string     `json:"plan_name" db:"plan_name"`
-	PricePerMonth   float64    `json:"price_per_month" db:"price_per_month"`
-	Currency        string     `json:"currency" db:"currency"`
-	Status          string     `json:"status" db:"status"`
-	NextBillingDate *time.Time `json:"next_billing_date" db:"next_billing_date"`
-	CreatedAt       time.Time  `json:"created_at" db:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at" db:"updated_at"`
+type PaidGroupWithCredentials struct {
+	ID                 string                      `json:"id"`
+	Name               string                      `json:"name"`
+	Description        string                      `json:"description"`
+	AppID              string                      `json:"app_id"`
+	MaxMembers         int                         `json:"max_members"`
+	MemberCount        int                         `json:"member_count"`
+	PricePerMember     int                         `json:"price_per_member"`
+	TotalPrice         int                         `json:"total_price"`
+	GroupStatus        string                      `json:"group_status"`
+	AllPaidAt          time.Time                   `json:"all_paid_at"`
+	CreatedAt          time.Time                   `json:"created_at"`
+	App                App                         `json:"app"`
+	Members            []GroupMemberWithUser       `json:"members"`
+	AccountCredentials []AccountCredentialWithUser `json:"account_credentials"`
 }
 
-type SubscriptionCreateRequest struct {
-	ServiceName   string  `json:"service_name" binding:"required"`
-	ServiceURL    string  `json:"service_url"`
-	PlanName      string  `json:"plan_name" binding:"required"`
-	PricePerMonth float64 `json:"price_per_month" binding:"required,min=0"`
-	Currency      string  `json:"currency" binding:"required"`
+type GroupMemberWithUser struct {
+	ID         string    `json:"id"`
+	GroupID    string    `json:"group_id"`
+	UserID     string    `json:"user_id"`
+	UserStatus string    `json:"user_status"`
+	JoinedAt   time.Time `json:"joined_at"`
+	User       User      `json:"user"`
 }
 
-type AccountCredentials struct {
-	ID                uuid.UUID              `json:"id" db:"id"`
-	SubscriptionID    uuid.UUID              `json:"subscription_id" db:"subscription_id"`
-	Username          *string                `json:"username" db:"username"`
-	PasswordEncrypted *string                `json:"-" db:"password_encrypted"`
-	AdditionalInfo    map[string]interface{} `json:"additional_info" db:"additional_info"`
-	CreatedAt         time.Time              `json:"created_at" db:"created_at"`
-	UpdatedAt         time.Time              `json:"updated_at" db:"updated_at"`
+type AccountCredentialWithUser struct {
+	ID          string    `json:"id"`
+	GroupID     string    `json:"group_id"`
+	UserID      string    `json:"user_id"`
+	Username    string    `json:"username"`
+	Email       string    `json:"email"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+	User        User      `json:"user"`
 }
 
-type AccountCredentialsRequest struct {
-	Username       string                 `json:"username"`
-	Password       string                 `json:"password"`
-	AdditionalInfo map[string]interface{} `json:"additional_info"`
+type GetPaidGroupsResponse struct {
+	Groups   []PaidGroupWithCredentials `json:"groups"`
+	Total    int                        `json:"total"`
+	Page     int                        `json:"page"`
+	PageSize int                        `json:"page_size"`
 }

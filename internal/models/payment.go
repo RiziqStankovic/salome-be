@@ -38,3 +38,13 @@ type PaymentNotification struct {
 	TransactionTime   string `json:"transaction_time"`
 	GrossAmount       string `json:"gross_amount"`
 }
+
+type Subscription struct {
+	ID            uuid.UUID `json:"id" db:"id"`
+	GroupID       uuid.UUID `json:"group_id" db:"group_id"`
+	ServiceName   string    `json:"service_name" db:"service_name"`
+	PricePerMonth float64   `json:"price_per_month" db:"price_per_month"`
+	Currency      string    `json:"currency" db:"currency"`
+	CreatedAt     time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at" db:"updated_at"`
+}

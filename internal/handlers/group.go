@@ -41,13 +41,47 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 		return
 	}
 
+	// Check if user is admin
+	var isAdmin bool
+	err := h.db.QueryRow(`
+		SELECT is_admin FROM users WHERE id = $1
+	`, userID.(uuid.UUID)).Scan(&isAdmin)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check user status"})
+		return
+	}
+
+	// Check group creation limit for non-admin users
+	if !isAdmin {
+		var groupCount int
+		// Count groups created by user in the last 30 days
+		err = h.db.QueryRow(`
+			SELECT COUNT(*) FROM groups 
+			WHERE owner_id = $1 AND created_at >= NOW() - INTERVAL '30 days'
+		`, userID.(uuid.UUID)).Scan(&groupCount)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check group creation limit"})
+			return
+		}
+
+		if groupCount >= 3 {
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error":      "Anda telah mencapai batas maksimal pembuatan grup (3 grup per bulan). Silakan tunggu hingga bulan berikutnya atau hubungi admin untuk bantuan.",
+				"limit":      3,
+				"current":    groupCount,
+				"reset_date": "Bulan depan",
+			})
+			return
+		}
+	}
+
 	// Get app information to calculate pricing
 	var app models.App
 	appQuery := `
 		SELECT id, name, total_price, max_group_members
 		FROM apps WHERE id = $1 AND is_active = true
 	`
-	err := h.db.QueryRow(appQuery, req.AppID).Scan(
+	err = h.db.QueryRow(appQuery, req.AppID).Scan(
 		&app.ID, &app.Name, &app.TotalPrice, &app.MaxGroupMembers,
 	)
 	if err != nil {
@@ -72,11 +106,11 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 	_, err = h.db.Exec(`
 		INSERT INTO groups (
 			id, name, description, app_id, owner_id, invite_code, max_members, 
-			price_per_member, admin_fee, total_price, group_status, is_public, created_at, updated_at
+			price_per_member, admin_fee, total_price, group_status, is_public, is_deleted, created_at, updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 	`, groupID, req.Name, req.Description, req.AppID, userID.(uuid.UUID), inviteCode, req.MaxMembers,
-		pricePerMember, adminFee, totalPrice, "open", req.IsPublic, time.Now(), time.Now())
+		pricePerMember, adminFee, totalPrice, "open", req.IsPublic, false, time.Now(), time.Now())
 
 	if err != nil {
 		fmt.Printf("Error creating group: %v\n", err)
@@ -130,6 +164,71 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Group created successfully",
 		"group":   groupResponse,
+	})
+}
+
+// GetGroupCreationLimit - Get user's group creation limit info
+func (h *GroupHandler) GetGroupCreationLimit(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// Check if user is admin
+	var isAdmin bool
+	err := h.db.QueryRow(`
+		SELECT is_admin FROM users WHERE id = $1
+	`, userID.(uuid.UUID)).Scan(&isAdmin)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check user status"})
+		return
+	}
+
+	if isAdmin {
+		c.JSON(http.StatusOK, gin.H{
+			"is_admin": true,
+			"limit":    -1, // Unlimited for admin
+			"current":  0,
+			"message":  "Admin dapat membuat grup tanpa batas",
+		})
+		return
+	}
+
+	// Get group count for regular users
+	var groupCount int
+	err = h.db.QueryRow(`
+		SELECT COUNT(*) FROM groups 
+		WHERE owner_id = $1 AND created_at >= NOW() - INTERVAL '30 days'
+	`, userID.(uuid.UUID)).Scan(&groupCount)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check group creation limit"})
+		return
+	}
+
+	// Calculate reset date (30 days from first group creation in current period)
+	var resetDate *time.Time
+	err = h.db.QueryRow(`
+		SELECT MIN(created_at) + INTERVAL '30 days' FROM groups 
+		WHERE owner_id = $1 AND created_at >= NOW() - INTERVAL '30 days'
+	`, userID.(uuid.UUID)).Scan(&resetDate)
+	if err != nil && err != sql.ErrNoRows {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to calculate reset date"})
+		return
+	}
+
+	remaining := 3 - groupCount
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"is_admin":   false,
+		"limit":      3,
+		"current":    groupCount,
+		"remaining":  remaining,
+		"reset_date": resetDate,
+		"can_create": remaining > 0,
 	})
 }
 
@@ -460,15 +559,37 @@ func (h *GroupHandler) GetGroupDetails(c *gin.Context) {
 		return
 	}
 
-	// Check if user is member of the group
-	var isMember bool
+	// Check if user is admin
+	var isAdmin bool
 	err := h.db.QueryRow(`
-		SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2)
-	`, groupID, userID.(uuid.UUID)).Scan(&isMember)
-
-	if err != nil || !isMember {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		SELECT is_admin FROM users WHERE id = $1
+	`, userID.(uuid.UUID)).Scan(&isAdmin)
+	if err != nil {
+		fmt.Printf("Error checking admin role for user %v: %v\n", userID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check user role"})
 		return
+	}
+
+	fmt.Printf("User %v is admin: %v\n", userID, isAdmin)
+
+	// If not admin, check if user is member of the group
+	if !isAdmin {
+		var isMember bool
+		err := h.db.QueryRow(`
+			SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2)
+		`, groupID, userID.(uuid.UUID)).Scan(&isMember)
+
+		if err != nil {
+			fmt.Printf("Error checking membership for user %v in group %s: %v\n", userID, groupID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check membership"})
+			return
+		}
+
+		if !isMember {
+			fmt.Printf("User %v is not a member of group %s\n", userID, groupID)
+			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+			return
+		}
 	}
 
 	// Get group details with app pricing and real-time member count
@@ -495,7 +616,12 @@ func (h *GroupHandler) GetGroupDetails(c *gin.Context) {
 	group.CurrentMembers = currentMemberCount
 
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Group not found"})
+		fmt.Printf("Error fetching group details for group %s: %v\n", groupID, err)
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Group not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch group details"})
+		}
 		return
 	}
 
@@ -790,8 +916,6 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 		return
 	}
 
-	// Check if user is member of the group
-	var isMember bool
 	userIDUUID, ok := userID.(uuid.UUID)
 	if !ok {
 		log.Printf("Invalid user ID type for group %s", groupID)
@@ -799,24 +923,38 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 		return
 	}
 
-	log.Printf("Checking membership: user %s for group %s", userIDUUID.String(), groupID)
+	// Check if user is admin
+	var isAdmin bool
 	err := h.db.QueryRow(`
-		SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2)
-	`, groupID, userIDUUID).Scan(&isMember)
-
+		SELECT is_admin FROM users WHERE id = $1
+	`, userIDUUID).Scan(&isAdmin)
 	if err != nil {
-		log.Printf("Error checking membership: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check membership"})
+		fmt.Printf("Error checking admin role for user %v in GetGroupMembers: %v\n", userIDUUID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check user role"})
 		return
 	}
 
-	// Debug: return membership status and continue
-	log.Printf("User %s membership status for group %s: %v", userIDUUID.String(), groupID, isMember)
+	fmt.Printf("User %v is admin for GetGroupMembers: %v\n", userIDUUID, isAdmin)
 
-	if !isMember {
-		log.Printf("User %s is not a member of group %s", userIDUUID.String(), groupID)
-		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-		return
+	// If not admin, check if user is member of the group
+	if !isAdmin {
+		var isMember bool
+		log.Printf("Checking membership: user %s for group %s", userIDUUID.String(), groupID)
+		err := h.db.QueryRow(`
+			SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2)
+		`, groupID, userIDUUID).Scan(&isMember)
+
+		if err != nil {
+			log.Printf("Error checking membership: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check membership"})
+			return
+		}
+
+		if !isMember {
+			log.Printf("User %s is not a member of group %s", userIDUUID.String(), groupID)
+			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+			return
+		}
 	}
 
 	// Get group members with price_per_member from groups table

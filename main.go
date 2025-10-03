@@ -33,7 +33,14 @@ func main() {
 	}
 
 	// Initialize Gin router
-	r := gin.Default()
+	r := gin.New()
+
+	// Custom logging middleware
+	r.Use(middleware.CustomLoggingMiddleware())
+	r.Use(gin.Recovery())
+
+	// User extraction middleware (extracts user info from JWT for logging)
+	r.Use(middleware.UserExtractionMiddleware())
 
 	// CORS middleware
 	r.Use(middleware.CORS())
@@ -50,9 +57,14 @@ func main() {
 	accountCredentialsHandler := handlers.NewAccountCredentialsHandler(db)
 	emailSubmissionHandler := handlers.NewEmailSubmissionHandler(db)
 	adminHandler := handlers.NewAdminHandler(db)
+	midtransHandler := handlers.NewMidtransHandler(db)
+	notificationHandler := handlers.NewNotificationHandler(db)
+	broadcastHandler := handlers.NewBroadcastHandler(db)
+	chatHandler := handlers.NewChatHandler(db)
+	userBroadcastHandler := handlers.NewUserBroadcastHandler(db)
 
 	// Setup routes
-	routes.SetupRoutes(r, authHandler, groupHandler, subscriptionHandler, paymentHandler, appHandler, messageHandler, transactionHandler, otpHandler, accountCredentialsHandler, emailSubmissionHandler, adminHandler, db)
+	routes.SetupRoutes(r, authHandler, groupHandler, subscriptionHandler, paymentHandler, appHandler, messageHandler, transactionHandler, otpHandler, accountCredentialsHandler, emailSubmissionHandler, adminHandler, midtransHandler, notificationHandler, broadcastHandler, chatHandler, userBroadcastHandler, db)
 
 	// Start server
 	appConfig := config.GetConfig()

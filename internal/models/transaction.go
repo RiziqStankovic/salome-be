@@ -43,6 +43,7 @@ type TransactionResponse struct {
 	Description      string     `json:"description"`
 	PaymentMethod    *string    `json:"payment_method"`
 	PaymentReference *string    `json:"payment_reference"`
+	PaymentLinkID    *string    `json:"payment_link_id"`
 	Status           string     `json:"status"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`

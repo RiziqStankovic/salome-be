@@ -188,6 +188,9 @@ func (h *AdminHandler) GetGroups(c *gin.Context) {
 	status := c.Query("status") // Now using group_status filter
 	search := c.Query("search")
 
+	// Debug logging
+	fmt.Printf("Admin GetGroups - Page: %d, PageSize: %d, Status: %s, Search: %s\n", page, pageSize, status, search)
+
 	// Calculate offset
 	offset := (page - 1) * pageSize
 
@@ -218,9 +221,17 @@ func (h *AdminHandler) GetGroups(c *gin.Context) {
 
 	// Add group_status filter
 	if status != "" && status != "all" {
-		query += ` AND g.group_status = $` + strconv.Itoa(argIndex)
-		args = append(args, status)
-		argIndex++
+		if status == "private" {
+			// Private groups are those with is_public = false
+			query += ` AND g.is_public = $` + strconv.Itoa(argIndex)
+			args = append(args, false)
+			argIndex++
+		} else {
+			// Other statuses use group_status
+			query += ` AND g.group_status = $` + strconv.Itoa(argIndex)
+			args = append(args, status)
+			argIndex++
+		}
 	}
 
 	// Add search filter
@@ -284,9 +295,17 @@ func (h *AdminHandler) GetGroups(c *gin.Context) {
 
 	// Add group_status filter for count
 	if status != "" && status != "all" {
-		countQuery += ` AND g.group_status = $` + strconv.Itoa(countArgIndex)
-		countArgs = append(countArgs, status)
-		countArgIndex++
+		if status == "private" {
+			// Private groups are those with is_public = false
+			countQuery += ` AND g.is_public = $` + strconv.Itoa(countArgIndex)
+			countArgs = append(countArgs, false)
+			countArgIndex++
+		} else {
+			// Other statuses use group_status
+			countQuery += ` AND g.group_status = $` + strconv.Itoa(countArgIndex)
+			countArgs = append(countArgs, status)
+			countArgIndex++
+		}
 	}
 
 	if search != "" {
@@ -310,7 +329,7 @@ func (h *AdminHandler) GetGroups(c *gin.Context) {
 			COUNT(CASE WHEN group_status = 'private' THEN 1 END) as pending,
 			COUNT(CASE WHEN group_status = 'closed' THEN 1 END) as closed,
 			COUNT(CASE WHEN group_status = 'full' THEN 1 END) as full,
-			COUNT(CASE WHEN group_status = 'paid_group' THEN 1 END) as paid,
+			COUNT(CASE WHEN group_status = 'paid_group' THEN 1 END) as group_paid,
 			COUNT(CASE WHEN is_public = true THEN 1 END) as public,
 			COUNT(CASE WHEN is_public = false THEN 1 END) as private,
 			COALESCE(SUM(gp.total_collected), 0) as total_revenue
@@ -324,17 +343,22 @@ func (h *AdminHandler) GetGroups(c *gin.Context) {
 		Pending      int     `json:"pending"`
 		Closed       int     `json:"closed"`
 		Full         int     `json:"full"`
-		Paid         int     `json:"paid"`
+		GroupPaid    int     `json:"group_paid"`
 		Public       int     `json:"public"`
 		Private      int     `json:"private"`
 		TotalRevenue float64 `json:"total_revenue"`
 	}
 
-	err = h.db.QueryRow(statsQuery).Scan(&stats.Total, &stats.Active, &stats.Pending, &stats.Closed, &stats.Full, &stats.Paid, &stats.Public, &stats.Private, &stats.TotalRevenue)
+	err = h.db.QueryRow(statsQuery).Scan(&stats.Total, &stats.Active, &stats.Pending, &stats.Closed, &stats.Full, &stats.GroupPaid, &stats.Public, &stats.Private, &stats.TotalRevenue)
 	if err != nil {
+		fmt.Printf("Error getting stats: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get stats"})
 		return
 	}
+
+	// Debug logging for stats
+	fmt.Printf("Stats - Total: %d, Active: %d, Pending: %d, Closed: %d, Full: %d, GroupPaid: %d, Public: %d, Private: %d\n",
+		stats.Total, stats.Active, stats.Pending, stats.Closed, stats.Full, stats.GroupPaid, stats.Public, stats.Private)
 
 	c.JSON(http.StatusOK, gin.H{
 		"data": groups,

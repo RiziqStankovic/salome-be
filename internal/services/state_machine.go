@@ -132,7 +132,9 @@ func (s *StateMachineService) checkAndActivateGroup(groupID string) error {
 
 	// If all members are paid, activate the group
 	if totalMembers > 0 && totalMembers == paidMembers {
-		now := time.Now()
+		// Use Asia/Jakarta timezone
+		loc, _ := time.LoadLocation("Asia/Jakarta")
+		now := time.Now().In(loc)
 
 		// Update group status
 		_, err = s.db.Exec(`

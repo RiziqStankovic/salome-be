@@ -90,34 +90,20 @@ func AuthRequiredWithStatus(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// AdminRequired checks if user is admin
+// AdminRequired checks if user is admin (assumes user is already authenticated)
 func AdminRequired(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// First check authentication
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})
-			c.Abort()
-			return
-		}
-
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-		if tokenString == authHeader {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization header format"})
-			c.Abort()
-			return
-		}
-
-		claims, err := utils.ValidateJWT(tokenString)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+		// Get user_id from context (set by AuthRequiredWithStatus)
+		userID, exists := c.Get("user_id")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 			c.Abort()
 			return
 		}
 
 		// Check if user is admin
 		var isAdmin bool
-		err = db.QueryRow("SELECT is_admin FROM users WHERE id = $1", claims.UserID).Scan(&isAdmin)
+		err := db.QueryRow("SELECT is_admin FROM users WHERE id = $1", userID).Scan(&isAdmin)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check admin status"})
 			c.Abort()
@@ -130,8 +116,7 @@ func AdminRequired(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		c.Set("user_id", claims.UserID)
-		c.Set("user_email", claims.Email)
+		// User is admin, continue
 		c.Next()
 	}
 }
