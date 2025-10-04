@@ -303,9 +303,9 @@ func (h *WebhookHandler) updateGroupMemberStatus(orderID string) error {
 	// Update group member status
 	_, err = h.db.Exec(`
 		UPDATE group_members
-		SET user_status = 'paid', paid_at = $1, updated_at = $2
-		WHERE group_id = $3 AND user_id = $4
-	`, time.Now(), time.Now(), *groupID, userID)
+		SET user_status = 'paid', paid_at = $1
+		WHERE group_id = $2 AND user_id = $3
+	`, time.Now(), *groupID, userID)
 
 	if err != nil {
 		fmt.Printf("[SALOME BE] ERROR: Failed to update group member status: GroupID=%s, UserID=%s, Error=%v\n", *groupID, userID, err)
