@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"database/sql"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -125,6 +126,27 @@ func CORS() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestOrigin := c.Request.Header.Get("Origin")
 		appConfig := config.GetConfig()
+
+		// Special handling for webhook endpoints - allow all origins
+		if strings.HasPrefix(c.Request.URL.Path, "/webhook/") {
+			fmt.Printf("[SALOME BE] Webhook request received: %s %s from %s (Origin: %s)\n",
+				c.Request.Method, c.Request.URL.Path, c.ClientIP(), requestOrigin)
+
+			c.Header("Access-Control-Allow-Origin", "*")
+			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization, X-Requested-With")
+			c.Header("Access-Control-Allow-Credentials", "false")
+
+			if c.Request.Method == "OPTIONS" {
+				fmt.Printf("[SALOME BE] Handling OPTIONS preflight request for webhook\n")
+				c.AbortWithStatus(204)
+				return
+			}
+
+			fmt.Printf("[SALOME BE] Proceeding with webhook request\n")
+			c.Next()
+			return
+		}
 
 		// Check if the request origin is in our allowed origins
 		allowedOrigins := appConfig.Server.CORSOrigins

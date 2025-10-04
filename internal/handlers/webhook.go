@@ -100,11 +100,36 @@ func (h *WebhookHandler) HandleWebhookFromCloudfren(c *gin.Context) {
 
 	fmt.Printf("Mapped transaction status: %s -> %s\n", webhookReq.TransactionStatus, status)
 
-	// Check if transaction exists
+	// Extract the base order ID (first 6 digits after prefix)
+	var baseOrderID string
+	if strings.HasPrefix(webhookReq.OrderID, "SALO-TOPUP-") {
+		// Extract: SALO-TOPUP-892929-1759555433162 -> SALO-TOPUP-892929
+		parts := strings.Split(webhookReq.OrderID, "-")
+		if len(parts) >= 3 {
+			baseOrderID = fmt.Sprintf("SALO-TOPUP-%s", parts[2])
+		} else {
+			baseOrderID = webhookReq.OrderID
+		}
+	} else if strings.HasPrefix(webhookReq.OrderID, "SALO-GRP-") {
+		// Extract: SALO-GRP-123456-1759555433162 -> SALO-GRP-123456
+		parts := strings.Split(webhookReq.OrderID, "-")
+		if len(parts) >= 3 {
+			baseOrderID = fmt.Sprintf("SALO-GRP-%s", parts[2])
+		} else {
+			baseOrderID = webhookReq.OrderID
+		}
+	} else {
+		baseOrderID = webhookReq.OrderID
+	}
+
+	fmt.Printf("[SALOME BE] Original Order ID: %s\n", webhookReq.OrderID)
+	fmt.Printf("[SALOME BE] Base Order ID: %s\n", baseOrderID)
+
+	// Check if transaction exists using base order ID
 	var exists bool
 	err := h.db.QueryRow(`
 		SELECT EXISTS(SELECT 1 FROM transactions WHERE payment_reference = $1)
-	`, webhookReq.OrderID).Scan(&exists)
+	`, baseOrderID).Scan(&exists)
 
 	if err != nil {
 		fmt.Printf("[SALOME BE] ERROR: Failed to check transaction existence: %v\n", err)
@@ -115,7 +140,7 @@ func (h *WebhookHandler) HandleWebhookFromCloudfren(c *gin.Context) {
 	}
 
 	if !exists {
-		fmt.Printf("[SALOME BE] ERROR: Transaction not found: %s\n", webhookReq.OrderID)
+		fmt.Printf("[SALOME BE] ERROR: Transaction not found: %s (base: %s)\n", webhookReq.OrderID, baseOrderID)
 		errorResponse := gin.H{"error": "Transaction not found"}
 		fmt.Printf("[SALOME BE] ERROR RESPONSE: %+v\n", errorResponse)
 		c.JSON(http.StatusNotFound, errorResponse)
@@ -127,7 +152,7 @@ func (h *WebhookHandler) HandleWebhookFromCloudfren(c *gin.Context) {
 		UPDATE transactions 
 		SET status = $1, payment_method = $2, updated_at = $3 
 		WHERE payment_reference = $4
-	`, status, webhookReq.PaymentType, time.Now(), webhookReq.OrderID)
+	`, status, webhookReq.PaymentType, time.Now(), baseOrderID)
 
 	if err != nil {
 		fmt.Printf("[SALOME BE] ERROR: Failed to update transaction status: %v\n", err)
@@ -137,18 +162,18 @@ func (h *WebhookHandler) HandleWebhookFromCloudfren(c *gin.Context) {
 		return
 	}
 
-	fmt.Printf("Updated transaction status: %s -> %s, payment_method: %s\n", webhookReq.OrderID, status, webhookReq.PaymentType)
+	fmt.Printf("Updated transaction status: %s -> %s, payment_method: %s (base: %s)\n", webhookReq.OrderID, status, webhookReq.PaymentType, baseOrderID)
 
 	// If transaction is success, update user balance for top-up transactions
 	if status == "success" {
-		err = h.updateUserBalanceForTopUp(webhookReq.OrderID)
+		err = h.updateUserBalanceForTopUp(baseOrderID)
 		if err != nil {
 			fmt.Printf("Error updating user balance: %v\n", err)
 			// Don't return error here, just log it
 		}
 
 		// Update group member status for group payments
-		err = h.updateGroupMemberStatus(webhookReq.OrderID)
+		err = h.updateGroupMemberStatus(baseOrderID)
 		if err != nil {
 			fmt.Printf("Error updating group member status: %v\n", err)
 			// Don't return error here, just log it
@@ -160,6 +185,7 @@ func (h *WebhookHandler) HandleWebhookFromCloudfren(c *gin.Context) {
 		"success":        true,
 		"message":        "Webhook processed successfully",
 		"order_id":       webhookReq.OrderID,
+		"base_order_id":  baseOrderID,
 		"status":         status,
 		"payment_method": webhookReq.PaymentType,
 	}
@@ -249,6 +275,8 @@ func (h *WebhookHandler) updateGroupMemberStatus(orderID string) error {
 		return nil
 	}
 
+	fmt.Printf("[SALOME BE] Updating group member status for order_id: %s\n", orderID)
+
 	// Get transaction details
 	var userID string
 	var groupID *string
@@ -280,10 +308,11 @@ func (h *WebhookHandler) updateGroupMemberStatus(orderID string) error {
 	`, time.Now(), time.Now(), *groupID, userID)
 
 	if err != nil {
+		fmt.Printf("[SALOME BE] ERROR: Failed to update group member status: GroupID=%s, UserID=%s, Error=%v\n", *groupID, userID, err)
 		return err
 	}
 
-	fmt.Printf("Updated group member status: GroupID=%s, UserID=%s\n", *groupID, userID)
+	fmt.Printf("[SALOME BE] Updated group member status: GroupID=%s, UserID=%s\n", *groupID, userID)
 	return nil
 }
 
