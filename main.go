@@ -58,13 +58,15 @@ func main() {
 	emailSubmissionHandler := handlers.NewEmailSubmissionHandler(db)
 	adminHandler := handlers.NewAdminHandler(db)
 	midtransHandler := handlers.NewMidtransHandler(db)
+	paymentLinkHandler := handlers.NewPaymentLinkHandler(db)
+	webhookHandler := handlers.NewWebhookHandler(db)
 	notificationHandler := handlers.NewNotificationHandler(db)
 	broadcastHandler := handlers.NewBroadcastHandler(db)
 	chatHandler := handlers.NewChatHandler(db)
 	userBroadcastHandler := handlers.NewUserBroadcastHandler(db)
 
 	// Setup routes
-	routes.SetupRoutes(r, authHandler, groupHandler, subscriptionHandler, paymentHandler, appHandler, messageHandler, transactionHandler, otpHandler, accountCredentialsHandler, emailSubmissionHandler, adminHandler, midtransHandler, notificationHandler, broadcastHandler, chatHandler, userBroadcastHandler, db)
+	routes.SetupRoutes(r, authHandler, groupHandler, subscriptionHandler, paymentHandler, appHandler, messageHandler, transactionHandler, otpHandler, accountCredentialsHandler, emailSubmissionHandler, adminHandler, midtransHandler, paymentLinkHandler, webhookHandler, notificationHandler, broadcastHandler, chatHandler, userBroadcastHandler, db)
 
 	// Start server
 	appConfig := config.GetConfig()

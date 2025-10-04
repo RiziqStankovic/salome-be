@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"salome-be/internal/config"
+	"strings"
 	"time"
 )
 
@@ -327,4 +328,147 @@ func (m *MidtransService) IsTransactionPending(status string) bool {
 // IsTransactionFailed mengecek apakah transaksi gagal
 func (m *MidtransService) IsTransactionFailed(status string) bool {
 	return status == "deny" || status == "cancel" || status == "expire" || status == "EXPIRE" || status == "failed"
+}
+
+// GetPaymentLinkStatus mengambil status payment link dari Midtrans
+func (m *MidtransService) GetPaymentLinkStatus(paymentLinkID string) (*MidtransPaymentLinkResponse, error) {
+	url := fmt.Sprintf("https://api.sandbox.midtrans.com/v1/payment-links/%s", paymentLinkID)
+
+	fmt.Printf("🔍 [MIDTRANS DEBUG] Getting payment link status for ID: %s\n", paymentLinkID)
+	fmt.Printf("🔍 [MIDTRANS DEBUG] Request URL: %s\n", url)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		fmt.Printf("❌ [MIDTRANS DEBUG] Error creating request: %v\n", err)
+		return nil, err
+	}
+
+	// Set headers
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	// Set authorization header
+	auth := base64.StdEncoding.EncodeToString([]byte(m.serverKey + ":"))
+	req.Header.Set("Authorization", "Basic "+auth)
+
+	fmt.Printf("🔍 [MIDTRANS DEBUG] Request headers: Authorization=Basic %s\n", auth[:10]+"...")
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		fmt.Printf("❌ [MIDTRANS DEBUG] Error making request: %v\n", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Printf("❌ [MIDTRANS DEBUG] Error reading response body: %v\n", err)
+		return nil, err
+	}
+
+	fmt.Printf("🔍 [MIDTRANS DEBUG] Response status: %d\n", resp.StatusCode)
+	fmt.Printf("🔍 [MIDTRANS DEBUG] Response body: %s\n", string(body))
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("❌ [MIDTRANS DEBUG] API error - Status: %d, Body: %s\n", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("midtrans API error: %s", string(body))
+	}
+
+	var paymentLinkResp MidtransPaymentLinkResponse
+	err = json.Unmarshal(body, &paymentLinkResp)
+	if err != nil {
+		fmt.Printf("❌ [MIDTRANS DEBUG] Error unmarshaling response: %v\n", err)
+		return nil, err
+	}
+
+	fmt.Printf("✅ [MIDTRANS DEBUG] Payment link response parsed successfully\n")
+	fmt.Printf("✅ [MIDTRANS DEBUG] Payment Link ID: %s\n", paymentLinkResp.PaymentLinkID)
+	fmt.Printf("✅ [MIDTRANS DEBUG] Order ID: %s\n", paymentLinkResp.OrderID)
+	fmt.Printf("✅ [MIDTRANS DEBUG] Status: %s\n", paymentLinkResp.Status)
+	fmt.Printf("✅ [MIDTRANS DEBUG] Gross Amount: %d\n", paymentLinkResp.GrossAmount)
+	fmt.Printf("✅ [MIDTRANS DEBUG] Currency: %s\n", paymentLinkResp.Currency)
+	fmt.Printf("✅ [MIDTRANS DEBUG] Expiry Time: %s\n", paymentLinkResp.ExpiryTime)
+	fmt.Printf("✅ [MIDTRANS DEBUG] Number of purchases: %d\n", len(paymentLinkResp.Purchases))
+
+	return &paymentLinkResp, nil
+}
+
+// CreatePaymentLink membuat payment link baru di Midtrans
+func (m *MidtransService) CreatePaymentLink(orderID string, amount int, currency string, expiryMinutes int) (*MidtransPaymentLinkResponse, error) {
+	url := "https://api.sandbox.midtrans.com/v1/payment-links"
+
+	fmt.Printf("🔍 [MIDTRANS DEBUG] Creating payment link for order: %s\n", orderID)
+
+	// Prepare request body
+	requestBody := map[string]interface{}{
+		"order_id":     orderID,
+		"gross_amount": amount,
+		"currency":     currency,
+		"expiry_time":  fmt.Sprintf("%d minutes", expiryMinutes),
+		"payment_settings": map[string]interface{}{
+			"payment_methods": []string{"credit_card", "bca_va", "bni_va", "bri_va", "echannel", "permata_va", "other_va", "gopay", "kredivo", "shopeepay"},
+		},
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		fmt.Printf("❌ [MIDTRANS DEBUG] Error marshaling request body: %v\n", err)
+		return nil, err
+	}
+
+	fmt.Printf("🔍 [MIDTRANS DEBUG] Request body: %s\n", string(jsonBody))
+
+	req, err := http.NewRequest("POST", url, strings.NewReader(string(jsonBody)))
+	if err != nil {
+		fmt.Printf("❌ [MIDTRANS DEBUG] Error creating request: %v\n", err)
+		return nil, err
+	}
+
+	// Set headers
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	// Set authorization header
+	auth := base64.StdEncoding.EncodeToString([]byte(m.serverKey + ":"))
+	req.Header.Set("Authorization", "Basic "+auth)
+
+	fmt.Printf("🔍 [MIDTRANS DEBUG] Request headers: Authorization=Basic %s\n", auth[:10]+"...")
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		fmt.Printf("❌ [MIDTRANS DEBUG] Error making request: %v\n", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Printf("❌ [MIDTRANS DEBUG] Error reading response body: %v\n", err)
+		return nil, err
+	}
+
+	fmt.Printf("🔍 [MIDTRANS DEBUG] Response status: %d\n", resp.StatusCode)
+	fmt.Printf("🔍 [MIDTRANS DEBUG] Response body: %s\n", string(body))
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		fmt.Printf("❌ [MIDTRANS DEBUG] API error - Status: %d, Body: %s\n", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("midtrans API error: %s", string(body))
+	}
+
+	var paymentLinkResp MidtransPaymentLinkResponse
+	err = json.Unmarshal(body, &paymentLinkResp)
+	if err != nil {
+		fmt.Printf("❌ [MIDTRANS DEBUG] Error unmarshaling response: %v\n", err)
+		return nil, err
+	}
+
+	fmt.Printf("✅ [MIDTRANS DEBUG] Payment link created successfully\n")
+	fmt.Printf("✅ [MIDTRANS DEBUG] Payment Link ID: %s\n", paymentLinkResp.PaymentLinkID)
+	fmt.Printf("✅ [MIDTRANS DEBUG] Order ID: %s\n", paymentLinkResp.OrderID)
+	fmt.Printf("✅ [MIDTRANS DEBUG] Status: %s\n", paymentLinkResp.Status)
+	fmt.Printf("✅ [MIDTRANS DEBUG] Gross Amount: %d\n", paymentLinkResp.GrossAmount)
+	fmt.Printf("✅ [MIDTRANS DEBUG] Currency: %s\n", paymentLinkResp.Currency)
+	fmt.Printf("✅ [MIDTRANS DEBUG] Expiry Time: %s\n", paymentLinkResp.ExpiryTime)
+
+	return &paymentLinkResp, nil
 }

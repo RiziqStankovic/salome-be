@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler *handlers.GroupHandler, subscriptionHandler *handlers.SubscriptionHandler, paymentHandler *handlers.PaymentHandler, appHandler *handlers.AppHandler, messageHandler *handlers.MessageHandler, transactionHandler *handlers.TransactionHandler, otpHandler *handlers.OTPHandler, accountCredentialsHandler *handlers.AccountCredentialsHandler, emailSubmissionHandler *handlers.EmailSubmissionHandler, adminHandler *handlers.AdminHandler, midtransHandler *handlers.MidtransHandler, notificationHandler *handlers.NotificationHandler, broadcastHandler *handlers.BroadcastHandler, chatHandler *handlers.ChatHandler, userBroadcastHandler *handlers.UserBroadcastHandler, db *sql.DB) {
+func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler *handlers.GroupHandler, subscriptionHandler *handlers.SubscriptionHandler, paymentHandler *handlers.PaymentHandler, appHandler *handlers.AppHandler, messageHandler *handlers.MessageHandler, transactionHandler *handlers.TransactionHandler, otpHandler *handlers.OTPHandler, accountCredentialsHandler *handlers.AccountCredentialsHandler, emailSubmissionHandler *handlers.EmailSubmissionHandler, adminHandler *handlers.AdminHandler, midtransHandler *handlers.MidtransHandler, paymentLinkHandler *handlers.PaymentLinkHandler, webhookHandler *handlers.WebhookHandler, notificationHandler *handlers.NotificationHandler, broadcastHandler *handlers.BroadcastHandler, chatHandler *handlers.ChatHandler, userBroadcastHandler *handlers.UserBroadcastHandler, db *sql.DB) {
 	// API v1
 	v1 := r.Group("/api/v1")
 
@@ -79,6 +79,13 @@ func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler 
 		payments.GET("", paymentHandler.GetUserPayments)
 	}
 
+	// Webhook routes (no auth required)
+	webhook := r.Group("/webhook")
+	{
+		webhook.POST("/cloudfren", webhookHandler.HandleWebhookFromCloudfren)
+		webhook.GET("/health", webhookHandler.HealthCheck)
+	}
+
 	// App routes (no auth required for browsing)
 	apps := v1.Group("/apps")
 	{
@@ -103,7 +110,6 @@ func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler 
 	{
 		transactions.GET("", transactionHandler.GetUserTransactions)
 		transactions.POST("", transactionHandler.CreateTransaction)
-		transactions.POST("/top-up", transactionHandler.TopUpBalance)
 	}
 
 	// Account credentials routes (require active status)
@@ -161,6 +167,15 @@ func SetupRoutes(r *gin.Engine, authHandler *handlers.AuthHandler, groupHandler 
 		midtrans.POST("/check-status", midtransHandler.CheckTransactionStatus)
 		midtrans.GET("/payment-link/:order_id", midtransHandler.GetTransactionPaymentLink)
 		midtrans.GET("/update-all-pending", midtransHandler.UpdateAllPendingTransactions)
+	}
+
+	// Payment Link routes
+	paymentLinks := v1.Group("/payment-links")
+	paymentLinks.Use(middleware.OptimizedAuthRequiredWithStatus(db))
+	{
+		paymentLinks.POST("/check-status", paymentLinkHandler.CheckPaymentLinkStatus)
+		paymentLinks.GET("/:payment_link_id", paymentLinkHandler.GetPaymentLinkInfo)
+		paymentLinks.GET("", paymentLinkHandler.ListUserPaymentLinks)
 	}
 
 	// Notification routes

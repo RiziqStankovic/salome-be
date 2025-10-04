@@ -40,6 +40,15 @@ func (h *TransactionHandler) GetUserTransactions(c *gin.Context) {
 
 	offset := (page - 1) * pageSize
 
+	// Get user balance first
+	var userBalance float64
+	balanceQuery := `SELECT balance FROM users WHERE id = $1`
+	err := h.db.QueryRow(balanceQuery, userID).Scan(&userBalance)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user balance"})
+		return
+	}
+
 	// Query transactions
 	query := `
 		SELECT 
@@ -84,6 +93,7 @@ func (h *TransactionHandler) GetUserTransactions(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
+		"saldo":        userBalance,
 		"transactions": transactions,
 		"total":        total,
 		"page":         page,

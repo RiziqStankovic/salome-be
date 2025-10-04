@@ -84,10 +84,26 @@ type FeatureConfig struct {
 }
 
 type MidtransConfig struct {
-	ServerKey    string `yaml:"server_key"`
-	ClientKey    string `yaml:"client_key"`
-	BaseURL      string `yaml:"base_url"`
-	IsProduction bool   `yaml:"is_production"`
+	ServerKey    string                `yaml:"server_key"`
+	ClientKey    string                `yaml:"client_key"`
+	BaseURL      string                `yaml:"base_url"`
+	IsProduction bool                  `yaml:"is_production"`
+	PaymentLink  PaymentLinkConfig     `yaml:"payment_link"`
+	Webhook      MidtransWebhookConfig `yaml:"webhook"`
+}
+
+type PaymentLinkConfig struct {
+	CheckURL      string `yaml:"check_url"`
+	WebURL        string `yaml:"web_url"`
+	Timeout       string `yaml:"timeout"`
+	RetryAttempts int    `yaml:"retry_attempts"`
+	RetryDelay    string `yaml:"retry_delay"`
+}
+
+type MidtransWebhookConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	SecretKey string `yaml:"secret_key"`
+	Timeout   string `yaml:"timeout"`
 }
 
 var AppConfig *Config
@@ -243,6 +259,43 @@ func setDefaults(config *Config) {
 	config.Features.EnableEmailVerification = true
 	config.Features.EnablePaymentGateway = true
 	config.Features.EnableNotifications = true
+
+	// Midtrans defaults
+	if config.Midtrans.ServerKey == "" {
+		config.Midtrans.ServerKey = "SB-Mid-server-i1dcC7yEZ88t9ojPby0wej3n"
+	}
+	if config.Midtrans.ClientKey == "" {
+		config.Midtrans.ClientKey = "SB-Mid-client-F4GiAgWMbYRqrHzr"
+	}
+	if config.Midtrans.BaseURL == "" {
+		config.Midtrans.BaseURL = "https://api.sandbox.midtrans.com"
+	}
+
+	// Payment Link defaults
+	if config.Midtrans.PaymentLink.CheckURL == "" {
+		config.Midtrans.PaymentLink.CheckURL = "https://api.sandbox.midtrans.com/v1/payment-links"
+	}
+	if config.Midtrans.PaymentLink.WebURL == "" {
+		config.Midtrans.PaymentLink.WebURL = "https://app.sandbox.midtrans.com/payment-links"
+	}
+	if config.Midtrans.PaymentLink.Timeout == "" {
+		config.Midtrans.PaymentLink.Timeout = "30s"
+	}
+	if config.Midtrans.PaymentLink.RetryAttempts == 0 {
+		config.Midtrans.PaymentLink.RetryAttempts = 3
+	}
+	if config.Midtrans.PaymentLink.RetryDelay == "" {
+		config.Midtrans.PaymentLink.RetryDelay = "5s"
+	}
+
+	// Webhook defaults
+	if config.Midtrans.Webhook.SecretKey == "" {
+		config.Midtrans.Webhook.SecretKey = "salome-midtrans-webhook-secret-2024"
+	}
+	if config.Midtrans.Webhook.Timeout == "" {
+		config.Midtrans.Webhook.Timeout = "10s"
+	}
+	config.Midtrans.Webhook.Enabled = true
 }
 
 func GetConfig() *Config {
