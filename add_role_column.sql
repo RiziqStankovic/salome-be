@@ -31,3 +31,5 @@ FROM group_members gm
 JOIN users u ON gm.user_id = u.id
 JOIN groups g ON gm.group_id = g.id
 ORDER BY g.name, gm.role;
+
+

@@ -871,23 +871,28 @@ func (h *UserBroadcastHandler) SendUserBroadcast(c *gin.Context) {
 
 // GetUserBroadcastsForDashboard - Get broadcasts for user dashboard
 func (h *UserBroadcastHandler) GetUserBroadcastsForDashboard(c *gin.Context) {
-	_, exists := c.Get("user_id")
+	userID, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
 
-	// Get broadcasts that are sent and visible to users
+	// Get broadcasts directly from user_broadcast_targets for the specific user
 	rows, err := h.db.Query(`
 		SELECT ub.id, ub.title, ub.message, ub.priority, ub.sent_at, ub.end_date,
 		       ub.created_at, u.full_name as creator_name
 		FROM user_broadcast ub
 		LEFT JOIN users u ON ub.created_by = u.id
-		WHERE ub.status = 'sent'
-		  AND (ub.end_date IS NULL OR ub.end_date > NOW())
+		WHERE ub.id IN (
+			SELECT ust.broadcast_id 
+			FROM user_broadcast_targets ust 
+			WHERE ust.user_id = $1
+		)
+		AND ub.status = 'sent'
+		AND (ub.end_date IS NULL OR ub.end_date > NOW())
 		ORDER BY ub.sent_at DESC
 		LIMIT 20
-	`)
+	`, userID)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch broadcasts"})
@@ -920,6 +925,11 @@ func (h *UserBroadcastHandler) GetUserBroadcastsForDashboard(c *gin.Context) {
 		}
 
 		broadcasts = append(broadcasts, broadcast)
+	}
+
+	// Ensure broadcasts is never null
+	if broadcasts == nil {
+		broadcasts = []models.UserBroadcast{}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"broadcasts": broadcasts})

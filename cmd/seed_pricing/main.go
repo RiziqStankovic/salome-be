@@ -10,7 +10,7 @@ import (
 
 func main() {
 	// Database connection
-	db, err := sql.Open("postgres", "host=localhost port=5432 user=postgres password=postgres dbname=salome_db sslmode=disable")
+	db, err := sql.Open("postgres", "host=aws-1-ap-southeast-1.pooler.supabase.com port=5432 user=postgres.pcxcbzihavcjycxwdrpc password=yar.-dZTLm6P$.e dbname=postgres sslmode=disable")
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 	}

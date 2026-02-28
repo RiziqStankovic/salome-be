@@ -114,6 +114,56 @@ func RunMigrations(db *sql.DB) error {
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);`
 
+	// Create apps table
+	appsTable := `
+	CREATE TABLE IF NOT EXISTS apps (
+		id VARCHAR(50) PRIMARY KEY,
+		name VARCHAR(100) NOT NULL,
+		description TEXT,
+		category VARCHAR(50),
+		icon_url TEXT,
+		website_url TEXT,
+		max_group_members INTEGER DEFAULT 5,
+		total_members INTEGER DEFAULT 0,
+		total_price INTEGER DEFAULT 0,
+		admin_fee_percentage DECIMAL(5,2) DEFAULT 10.00,
+		how_it_works TEXT,
+		is_popular BOOLEAN DEFAULT FALSE,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_apps_category ON apps(category);
+	CREATE INDEX IF NOT EXISTS idx_apps_popular ON apps(is_popular);
+	CREATE INDEX IF NOT EXISTS idx_apps_name ON apps(name);`
+
+	// Create chats table
+	chatsTable := `
+	CREATE TABLE IF NOT EXISTS chats (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+		anonymous_name VARCHAR(255),
+		status VARCHAR(50) NOT NULL DEFAULT 'open',
+		is_read BOOLEAN DEFAULT false,
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+		updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+	);
+	CREATE INDEX IF NOT EXISTS idx_chats_user_id ON chats(user_id);
+	CREATE INDEX IF NOT EXISTS idx_chats_status ON chats(status);
+	CREATE INDEX IF NOT EXISTS idx_chats_is_read ON chats(is_read);`
+
+	// Create messages table
+	messagesTable := `
+	CREATE TABLE IF NOT EXISTS messages (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		chat_id UUID NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+		sender_id UUID REFERENCES users(id) ON DELETE SET NULL,
+		sender_type VARCHAR(50) NOT NULL,
+		content TEXT NOT NULL,
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+	);
+	CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
+	CREATE INDEX IF NOT EXISTS idx_messages_sender_id ON messages(sender_id);`
+
 	// Create account_credentials table
 	accountCredentialsTable := `
 	CREATE TABLE IF NOT EXISTS public.account_credentials (
@@ -133,7 +183,7 @@ func RunMigrations(db *sql.DB) error {
 	CREATE TABLE IF NOT EXISTS public.email_submissions (
 		id uuid DEFAULT gen_random_uuid() NOT NULL,
 		user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-		group_id varchar(255) NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+		group_id uuid NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
 		app_id varchar(255) NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
 		email varchar(255) NOT NULL,
 		username varchar(255) NULL,
@@ -153,6 +203,9 @@ func RunMigrations(db *sql.DB) error {
 	addAppsStatusFields := `
 	ALTER TABLE apps ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
 	ALTER TABLE apps ADD COLUMN IF NOT EXISTS is_available BOOLEAN DEFAULT TRUE;
+	ALTER TABLE apps ADD COLUMN IF NOT EXISTS max_group_members INTEGER DEFAULT 5;
+	ALTER TABLE apps ADD COLUMN IF NOT EXISTS admin_fee_percentage DECIMAL(5,2) DEFAULT 10.00;
+	ALTER TABLE apps ADD COLUMN IF NOT EXISTS how_it_works TEXT;
 	CREATE INDEX IF NOT EXISTS idx_apps_is_active ON apps(is_active);
 	CREATE INDEX IF NOT EXISTS idx_apps_is_available ON apps(is_available);
 	DO $$ 
@@ -196,6 +249,9 @@ func RunMigrations(db *sql.DB) error {
 		subscriptionsTable,
 		subscriptionSharesTable,
 		paymentsTable,
+		appsTable,
+		chatsTable,
+		messagesTable,
 		accountCredentialsTable,
 		emailSubmissionsTable,
 		addAppsStatusFields,

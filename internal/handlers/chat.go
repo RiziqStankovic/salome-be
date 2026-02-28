@@ -46,6 +46,8 @@ func (h *ChatHandler) CreateChat(c *gin.Context) {
 		senderType = "anonymous"
 	}
 
+	now := time.Now()
+
 	tx, err := h.db.Begin()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to begin transaction"})
@@ -58,9 +60,10 @@ func (h *ChatHandler) CreateChat(c *gin.Context) {
 	_, err = tx.Exec(`
 		INSERT INTO chats (id, user_id, anonymous_name, status, is_read, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, newChatID, userID, anonymousName, "open", false, time.Now(), time.Now())
+	`, newChatID, userID, anonymousName, "open", false, now, now)
 
 	if err != nil {
+		fmt.Printf("CreateChat insert chat error: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create chat"})
 		return
 	}
@@ -70,54 +73,36 @@ func (h *ChatHandler) CreateChat(c *gin.Context) {
 	_, err = tx.Exec(`
 		INSERT INTO messages (id, chat_id, sender_id, sender_type, content, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
-	`, newMessageID, newChatID, userID, senderType, req.Content, time.Now())
+	`, newMessageID, newChatID, userID, senderType, req.Content, now)
 
 	if err != nil {
+		fmt.Printf("CreateChat insert initial message error: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create initial message"})
 		return
 	}
 
 	if err := tx.Commit(); err != nil {
+		fmt.Printf("CreateChat commit error: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction"})
 		return
 	}
 
-	// Fetch the created chat and its first message for response
-	var chat models.Chat
-	var message models.Message
-
-	chatRow := h.db.QueryRow(`
-		SELECT id, user_id, anonymous_name, status, created_at, updated_at FROM chats WHERE id = $1
-	`, newChatID)
-	err = chatRow.Scan(&chat.ID, &chat.UserID, &chat.AnonymousName, &chat.Status, &chat.CreatedAt, &chat.UpdatedAt)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch created chat"})
-		return
-	}
-
-	messageRow := h.db.QueryRow(`
-		SELECT id, chat_id, sender_id, sender_type, content, created_at FROM messages WHERE id = $1
-	`, newMessageID)
-	err = messageRow.Scan(&message.ID, &message.ChatID, &message.SenderID, &message.SenderType, &message.Content, &message.CreatedAt)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch initial message"})
-		return
-	}
-
 	chatResponse := models.ChatResponse{
-		ID:            chat.ID,
-		UserID:        chat.UserID,
-		AnonymousName: chat.AnonymousName,
-		Status:        chat.Status,
-		CreatedAt:     chat.CreatedAt,
-		UpdatedAt:     chat.UpdatedAt,
+		ID:            newChatID,
+		UserID:        userID,
+		AnonymousName: anonymousName,
+		Status:        "open",
+		IsRead:        false,
+		MessageCount:  1,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 		LastMessage: &models.MessageResponse{
-			ID:         message.ID,
-			ChatID:     message.ChatID,
-			SenderID:   message.SenderID,
-			SenderType: message.SenderType,
-			Content:    message.Content,
-			CreatedAt:  message.CreatedAt,
+			ID:         newMessageID,
+			ChatID:     newChatID,
+			SenderID:   userID,
+			SenderType: senderType,
+			Content:    req.Content,
+			CreatedAt:  now,
 		},
 	}
 
@@ -416,6 +401,7 @@ func (h *ChatHandler) SendMessage(c *gin.Context) {
 	}
 
 	var message models.MessageResponse
+	var senderID sql.NullString
 	var senderName sql.NullString
 
 	err = h.db.QueryRow(`
@@ -423,7 +409,7 @@ func (h *ChatHandler) SendMessage(c *gin.Context) {
 		FROM messages m
 		LEFT JOIN users u ON m.sender_id = u.id
 		WHERE m.id = $1
-	`, newMessageID).Scan(&message.ID, &message.ChatID, &userID, &message.SenderType, &message.Content, &message.CreatedAt, &senderName)
+	`, newMessageID).Scan(&message.ID, &message.ChatID, &senderID, &message.SenderType, &message.Content, &message.CreatedAt, &senderName)
 
 	if err != nil {
 		fmt.Printf("Error fetching sent message: %v\n", err)
@@ -431,8 +417,11 @@ func (h *ChatHandler) SendMessage(c *gin.Context) {
 		return
 	}
 
-	if userID != nil {
-		message.SenderID = userID
+	if senderID.Valid {
+		parsedID, parseErr := uuid.Parse(senderID.String)
+		if parseErr == nil {
+			message.SenderID = &parsedID
+		}
 	}
 	if senderName.Valid {
 		message.SenderName = &senderName.String
